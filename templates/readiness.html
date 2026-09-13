@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Configuration Readiness</title>
+  <style>
+    body { font-family: sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; }
+    .summary { padding: 1rem; border: 1px solid #ccc; margin-bottom: 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .65rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    .ready { font-weight: 700; }
+    .declared { font-weight: 700; }
+    .missing { font-weight: 700; }
+    .warning { font-weight: 700; }
+    nav a { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('company_onboarding') }}">Setup Wizard</a>
+    <a href="{{ url_for('company_settings') }}">Company Settings</a>
+  </nav>
+
+  <h1>Configuration Readiness</h1>
+  <p>{{ profile.name }}</p>
+
+  <div class="summary">
+    {% if ready %}
+      <strong>Core configuration is ready.</strong>
+      <p>Warnings and declared-but-not-connected systems below may still require work before the company uses every integration.</p>
+    {% else %}
+      <strong>Not ready for go-live.</strong>
+      <p>{{ blocker_count }} blocking item(s) require attention.</p>
+    {% endif %}
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Area</th><th>Status</th><th>Check</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.area }}</td>
+        <td class="{{ item.status }}">{{ item.status|upper }}</td>
+        <td>{{ item.title }}</td>
+        <td>{{ item.detail }}{% if item.blocking %} <strong>(BLOCKING)</strong>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
