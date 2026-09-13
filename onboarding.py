@@ -45,16 +45,12 @@ def install_onboarding(app, db_path):
     def identity(user):
         return f"{user.display_name} [{user.username}] ({user.role})"
 
-    @app.before_request
-    def require_initial_company_setup():
-        if state.completed() or users.count() == 0:
-            return None
-        if request.endpoint in {"company_onboarding", "login", "logout", "setup_admin", "static"}:
-            return None
-        user = current_user()
-        if user is not None and permissions.user_has(user, "company.configure"):
-            return redirect(url_for("company_onboarding"))
-        return None
+    @app.after_request
+    def send_first_admin_to_company_setup(response):
+        if request.endpoint == "setup_admin" and request.method == "POST" and response.status_code in {301, 302, 303, 307, 308}:
+            if users.count() > 0 and not state.completed():
+                response.headers["Location"] = url_for("company_onboarding")
+        return response
 
     @app.route("/onboarding", methods=["GET", "POST"])
     def company_onboarding():
