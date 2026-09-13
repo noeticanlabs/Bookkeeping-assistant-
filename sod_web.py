@@ -7,7 +7,6 @@ from flask import flash, redirect, render_template, request, session, url_for
 
 from approval_policy import ApprovalPolicy, ApprovalPolicyStore
 from atomic_uow import AtomicApprovalUnitOfWork
-from document_intake import record_approved_document
 from workflow_policy import ACTION_TYPES, WorkflowPolicyStore
 
 
@@ -30,27 +29,13 @@ def install_separation_of_duties(app, db_path):
         flash(message, "error")
         return redirect(url_for("dashboard"))
 
-    def finalize_document(payload, evidence_id, actor, request_id=None, approver_ids=None):
-        """Direct (zero-approval) path. Governed approval requests use AtomicApprovalUnitOfWork."""
-        book = app.config["BOOKKEEPER"]
-        treatment = payload["treatment"]
-        if payload["record_type"] == "vendor_bill" and treatment == "ask" and book.vendor_bill_mode != "ask":
-            treatment = book.vendor_bill_mode
-        record = record_approved_document(
-            book, record_id=payload["record_id"], vendor=payload["vendor"], amount=Decimal(payload["amount"]),
-            reference=payload["reference"], work_order_id=payload["work_order_id"], record_type=payload["record_type"],
-            treatment=treatment, linked_cost_id=payload["linked_cost_id"],
+    def atomic_uow():
+        return AtomicApprovalUnitOfWork(
+            db_path,
+            app.config["BOOKKEEPER"],
+            app.config["PROVENANCE"],
+            app.config["CORRECTIONS"],
         )
-        record_type = "cost" if record.id in book.costs else "vendor_bill"
-        app.config["PROVENANCE"].bind_record(evidence_id, record_type, record.id)
-        app.config["SAVE_BOOKKEEPER"]()
-        app.config["AUDIT_LOG"].append(
-            "document.approved", evidence_id,
-            {"result": {"record_type": record_type, "record_id": record.id},
-             "approver_ids": approver_ids or [], "request_id": request_id,
-             "workflow_direct": request_id is None}, actor=actor,
-        )
-        return record
 
     @app.route("/settings/approvals", methods=["GET", "POST"])
     def approval_settings():
@@ -136,8 +121,8 @@ def install_separation_of_duties(app, db_path):
             action_type = "vendor_bill" if payload["record_type"] == "vendor_bill" else "document_cost"
             required = workflows.approvals_required(action_type, amount)
             if required == 0:
-                finalize_document(payload, evidence_id, ident(u))
-                flash("Recorded directly under company workflow policy", "success")
+                atomic_uow().finalize_direct_document(payload, evidence_id, ident(u))
+                flash("Recorded directly under company workflow policy with atomic persistence", "success")
                 return redirect(url_for("dashboard"))
             req = approvals.create_request("document", evidence_id, u.user_id, payload, amount,
                                            required_approvals=required)
@@ -169,13 +154,7 @@ def install_separation_of_duties(app, db_path):
             try:
                 required = workflows.approvals_required("cost_correction", amount)
                 if required == 0:
-                    replacement = app.config["CORRECTIONS"].approve(app.config["BOOKKEEPER"], correction_id, ident(u))
-                    app.config["SAVE_BOOKKEEPER"]()
-                    app.config["AUDIT_LOG"].append(
-                        "cost.correction.finalized", f"CORRECTION:{correction_id}",
-                        {"replacement_cost_id": replacement.id, "approver_ids": [], "workflow_direct": True},
-                        actor=ident(u),
-                    )
+                    atomic_uow().finalize_direct_correction(correction_id, ident(u))
                     return result
                 req = approvals.create_request("cost_correction", correction_id, u.user_id,
                                                {"correction_id": correction_id}, amount,
@@ -185,8 +164,8 @@ def install_separation_of_duties(app, db_path):
                     {"request_id": req.request_id, "required_approvals": req.required_approvals,
                      "authenticated_user_id": u.user_id}, actor=ident(u),
                 )
-            except ValueError:
-                pass
+            except ValueError as exc:
+                flash(str(exc), "error")
         return result
     app.view_functions["propose_cost_correction"] = propose_correction_governed
 
@@ -196,13 +175,7 @@ def install_separation_of_duties(app, db_path):
         if not permissions.user_has(u, "corrections.approve"):
             return deny("Approval permission required")
         try:
-            uow = AtomicApprovalUnitOfWork(
-                db_path,
-                app.config["BOOKKEEPER"],
-                app.config["PROVENANCE"],
-                app.config["CORRECTIONS"],
-            )
-            count, required, finalized = uow.approve(request_id, u.user_id, ident(u))
+            count, required, finalized = atomic_uow().approve(request_id, u.user_id, ident(u))
             if finalized:
                 flash("Required independent approvals satisfied; financial state updated atomically", "success")
             else:
