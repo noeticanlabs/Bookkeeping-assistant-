@@ -57,6 +57,14 @@ class Payment:
 
 
 @dataclass
+class BankDeposit:
+    id: str
+    amount: Money
+    payment_id: str | None = None
+    reference: str | None = None
+
+
+@dataclass
 class ReviewItem:
     kind: str
     message: str
@@ -81,6 +89,7 @@ class Bookkeeper:
     costs: dict[str, Cost] = field(default_factory=dict)
     invoices: dict[str, Invoice] = field(default_factory=dict)
     payments: dict[str, Payment] = field(default_factory=dict)
+    deposits: dict[str, BankDeposit] = field(default_factory=dict)
 
     def add_work_order(self, work_order: WorkOrder) -> None:
         self.work_orders[work_order.id] = work_order
@@ -144,6 +153,46 @@ class Bookkeeper:
         if suggestion is None:
             raise ValueError("No unambiguous invoice match")
         return self.match_payment(payment_id, suggestion)
+
+    def add_deposit(self, deposit: BankDeposit) -> None:
+        if deposit.amount <= 0:
+            raise ValueError("Deposit amount must be greater than zero")
+        self.deposits[deposit.id] = deposit
+
+    def suggest_deposit_match(self, deposit_id: str) -> str | None:
+        deposit = self.deposits[deposit_id]
+        if not deposit.reference:
+            return None
+        reference = deposit.reference.upper()
+        matches = [payment_id for payment_id in self.payments if payment_id.upper() in reference]
+        return matches[0] if len(matches) == 1 else None
+
+    def match_deposit(self, deposit_id: str, payment_id: str) -> BankDeposit:
+        if payment_id not in self.payments:
+            raise ValueError("Unknown payment")
+        deposit = self.deposits[deposit_id]
+        if deposit.payment_id:
+            raise ValueError("Deposit is already matched")
+        deposit.payment_id = payment_id
+        return deposit
+
+    def accept_deposit_match(self, deposit_id: str) -> BankDeposit:
+        suggestion = self.suggest_deposit_match(deposit_id)
+        if suggestion is None:
+            raise ValueError("No unambiguous payment match")
+        return self.match_deposit(deposit_id, suggestion)
+
+    def deposit_difference(self, deposit_id: str) -> Money | None:
+        deposit = self.deposits[deposit_id]
+        if not deposit.payment_id:
+            return None
+        return deposit.amount - self.payments[deposit.payment_id].amount
+
+    def deposit_status(self, deposit_id: str) -> str:
+        deposit = self.deposits[deposit_id]
+        if not deposit.payment_id:
+            return "unmatched"
+        return "matched" if self.deposit_difference(deposit_id) == 0 else "difference"
 
     def invoice_for(self, work_order_id: str) -> Invoice | None:
         return next((i for i in self.invoices.values() if i.work_order_id == work_order_id), None)
@@ -209,6 +258,14 @@ class Bookkeeper:
                 suggestion = self.suggest_payment_match(payment.id)
                 message = f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to an invoice"
                 issues.append(ReviewItem("unmatched_payment", message, payment.id))
+        for deposit in self.deposits.values():
+            status = self.deposit_status(deposit.id)
+            if status == "unmatched":
+                suggestion = self.suggest_deposit_match(deposit.id)
+                message = f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a payment"
+                issues.append(ReviewItem("unmatched_deposit", message, deposit.id))
+            elif status == "difference":
+                issues.append(ReviewItem("deposit_difference", f"Deposit differs from payment by {self.deposit_difference(deposit.id)}", deposit.id))
         return issues
 
 
@@ -221,4 +278,5 @@ class FieldService(Protocol):
 class Accounting(Protocol):
     def costs(self) -> list[Cost]: ...
     def payments(self) -> list[Payment]: ...
+    def deposits(self) -> list[BankDeposit]: ...
     def export_invoice(self, invoice: Invoice) -> str: ...
