@@ -180,12 +180,7 @@ class Bookkeeper:
             raise ValueError("Unknown work order")
         self.vendor_bills[bill.id] = bill
 
-    def treat_vendor_bill(
-        self,
-        bill_id: str,
-        treatment: str | None = None,
-        linked_cost_id: str | None = None,
-    ) -> VendorBill:
+    def treat_vendor_bill(self, bill_id: str, treatment: str | None = None, linked_cost_id: str | None = None) -> VendorBill:
         bill = self.vendor_bills[bill_id]
         chosen = treatment or self.vendor_bill_mode
         if chosen == "ask":
@@ -194,14 +189,12 @@ class Bookkeeper:
             raise ValueError("Invalid vendor bill treatment")
         if bill.treatment is not None:
             raise ValueError("Vendor bill treatment is already set")
-
         if chosen == "create_cost":
             if not bill.work_order_id:
                 raise ValueError("Job cost treatment requires a work order")
             cost_id = f"BILL-COST-{bill.id}"
             self.add_cost(Cost(cost_id, bill.vendor, bill.amount, "vendor_bill", bill.work_order_id, bill.id))
             bill.linked_cost_id = cost_id
-
         elif chosen == "support_cost":
             if not linked_cost_id or linked_cost_id not in self.costs:
                 raise ValueError("Support treatment requires an existing cost")
@@ -211,7 +204,6 @@ class Bookkeeper:
             if not bill.work_order_id:
                 bill.work_order_id = cost.work_order_id
             bill.linked_cost_id = linked_cost_id
-
         bill.treatment = chosen
         return bill
 
@@ -226,24 +218,13 @@ class Bookkeeper:
 
     def accounts_payable_summary(self) -> dict[str, object]:
         open_bills = [b for b in self.vendor_bills.values() if b.payment_status != "paid"]
-        return {
-            "open_bill_count": len(open_bills),
-            "open_bill_balance": sum((b.balance_due for b in open_bills), Decimal("0")),
-            "open_bills": open_bills,
-        }
+        return {"open_bill_count": len(open_bills), "open_bill_balance": sum((b.balance_due for b in open_bills), Decimal("0")), "open_bills": open_bills}
 
     def near_term_position(self) -> dict[str, Money]:
         """Operational snapshot only: issued open AR minus open AP. Not a cash forecast."""
-        receivables = sum(
-            (i.balance_due for i in self.invoices.values() if i.status != "draft" and i.payment_status != "paid"),
-            Decimal("0"),
-        )
+        receivables = sum((i.balance_due for i in self.invoices.values() if i.status != "draft" and i.payment_status != "paid"), Decimal("0"))
         payables = self.accounts_payable_summary()["open_bill_balance"]
-        return {
-            "expected_in": receivables,
-            "owed_out": payables,
-            "net_position": receivables - payables,
-        }
+        return {"expected_in": receivables, "owed_out": payables, "net_position": receivables - payables}
 
     def suggest_cost_match(self, cost_id: str) -> str | None:
         cost = self.costs[cost_id]
@@ -270,6 +251,8 @@ class Bookkeeper:
     def add_invoice(self, invoice: Invoice) -> None:
         if invoice.id in self.invoices:
             raise ValueError("Duplicate invoice ID")
+        if invoice.work_order_id not in self.work_orders:
+            raise ValueError("Unknown work order")
         if invoice.total <= 0:
             raise ValueError("Invoice total must be greater than zero")
         if invoice.amount_paid < 0 or invoice.amount_paid > invoice.total:
@@ -281,7 +264,9 @@ class Bookkeeper:
             raise ValueError("Duplicate payment ID")
         if payment.amount <= 0:
             raise ValueError("Payment amount must be greater than zero")
-        if payment.invoice_id and payment.invoice_id in self.invoices:
+        if payment.invoice_id:
+            if payment.invoice_id not in self.invoices:
+                raise ValueError("Unknown invoice")
             invoice = self.invoices[payment.invoice_id]
             if payment.amount > invoice.balance_due:
                 raise ValueError("Payment exceeds invoice balance due")
@@ -356,9 +341,7 @@ class Bookkeeper:
 
     def deposit_status(self, deposit_id: str) -> str:
         deposit = self.deposits[deposit_id]
-        if not deposit.payment_id:
-            return "unmatched"
-        if deposit.payment_id not in self.payments:
+        if not deposit.payment_id or deposit.payment_id not in self.payments:
             return "unmatched"
         if self.deposit_difference(deposit_id) == 0:
             return "explained" if deposit.processor_fee > 0 else "matched"
@@ -381,10 +364,7 @@ class Bookkeeper:
         return invoice
 
     def job_cost(self, work_order_id: str) -> Money:
-        return sum(
-            (c.amount for c in self.costs.values() if c.work_order_id == work_order_id and c.is_current),
-            Decimal("0"),
-        )
+        return sum((c.amount for c in self.costs.values() if c.work_order_id == work_order_id and c.is_current), Decimal("0"))
 
     def job_profit(self, work_order_id: str) -> Money | None:
         invoice = self.invoice_for(work_order_id)
@@ -394,19 +374,14 @@ class Bookkeeper:
         wo = self.work_orders[work_order_id]
         invoice = self.invoice_for(work_order_id)
         issues: list[str] = []
-        if wo.status != "complete":
-            issues.append("Work order is not complete")
+        if wo.status != "complete": issues.append("Work order is not complete")
         if invoice is None:
             issues.append("Completed work order has no invoice")
         else:
-            if invoice.customer != wo.customer:
-                issues.append("Invoice customer does not match work order")
-            if wo.quoted_total is not None and invoice.total != wo.quoted_total:
-                issues.append("Invoice total differs from quoted total")
+            if invoice.customer != wo.customer: issues.append("Invoice customer does not match work order")
+            if wo.quoted_total is not None and invoice.total != wo.quoted_total: issues.append("Invoice total differs from quoted total")
         ready = wo.status == "complete" and invoice is not None and not issues
-        return InvoiceReview(wo.id, "ready" if ready else "needs_attention", invoice.id if invoice else None,
-                             wo.quoted_total, invoice.total if invoice else None, self.job_cost(wo.id),
-                             self.job_profit(wo.id), issues)
+        return InvoiceReview(wo.id, "ready" if ready else "needs_attention", invoice.id if invoice else None, wo.quoted_total, invoice.total if invoice else None, self.job_cost(wo.id), self.job_profit(wo.id), issues)
 
     def completed_job_invoice_reviews(self) -> list[InvoiceReview]:
         return [self.review_invoice(wo.id) for wo in self.work_orders.values() if wo.status == "complete"]
@@ -415,29 +390,24 @@ class Bookkeeper:
         issues: list[ReviewItem] = []
         for result in self.completed_job_invoice_reviews():
             for message in result.issues:
-                kind = "unbilled_job" if result.invoice_id is None else "invoice_review"
-                issues.append(ReviewItem(kind, message, result.invoice_id or result.work_order_id))
+                issues.append(ReviewItem("unbilled_job" if result.invoice_id is None else "invoice_review", message, result.invoice_id or result.work_order_id))
         for cost in self.current_costs():
             if cost.work_order_id and cost.work_order_id not in self.work_orders:
                 issues.append(ReviewItem("unknown_job", "Cost references an unknown work order", cost.id))
             elif cost.work_order_id is None:
                 suggestion = self.suggest_cost_match(cost.id)
-                message = f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead"
-                issues.append(ReviewItem("unassigned_cost", message, cost.id))
+                issues.append(ReviewItem("unassigned_cost", f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead", cost.id))
         for bill in self.vendor_bills.values():
-            if bill.treatment is None:
-                issues.append(ReviewItem("vendor_bill_treatment", "Vendor bill needs cost treatment", bill.id))
+            if bill.treatment is None: issues.append(ReviewItem("vendor_bill_treatment", "Vendor bill needs cost treatment", bill.id))
         for payment in self.payments.values():
             if payment.invoice_id is None or payment.invoice_id not in self.invoices:
                 suggestion = self.suggest_payment_match(payment.id) if payment.invoice_id is None else None
-                message = f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to a valid invoice"
-                issues.append(ReviewItem("unmatched_payment", message, payment.id))
+                issues.append(ReviewItem("unmatched_payment", f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to a valid invoice", payment.id))
         for deposit in self.deposits.values():
             status = self.deposit_status(deposit.id)
             if status == "unmatched":
                 suggestion = self.suggest_deposit_match(deposit.id)
-                message = f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a valid payment"
-                issues.append(ReviewItem("unmatched_deposit", message, deposit.id))
+                issues.append(ReviewItem("unmatched_deposit", f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a valid payment", deposit.id))
             elif status == "difference":
                 issues.append(ReviewItem("deposit_difference", f"Deposit still differs by {self.deposit_difference(deposit.id)}", deposit.id))
         return issues
@@ -447,19 +417,7 @@ class Bookkeeper:
         unpaid = [i for i in self.invoices.values() if i.status != "draft" and i.payment_status != "paid"]
         ap = self.accounts_payable_summary()
         position = self.near_term_position()
-        return {
-            "completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"),
-            "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"),
-            "vendor_bills_needing_treatment": sum(1 for i in issues if i.kind == "vendor_bill_treatment"),
-            "unmatched_payments": sum(1 for i in issues if i.kind == "unmatched_payment"),
-            "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}),
-            "open_invoice_count": len(unpaid),
-            "open_invoice_balance": position["expected_in"],
-            "open_bill_count": ap["open_bill_count"],
-            "open_bill_balance": position["owed_out"],
-            "near_term_net_position": position["net_position"],
-            "needs_attention": issues,
-        }
+        return {"completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"), "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"), "vendor_bills_needing_treatment": sum(1 for i in issues if i.kind == "vendor_bill_treatment"), "unmatched_payments": sum(1 for i in issues if i.kind == "unmatched_payment"), "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}), "open_invoice_count": len(unpaid), "open_invoice_balance": position["expected_in"], "open_bill_count": ap["open_bill_count"], "open_bill_balance": position["owed_out"], "near_term_net_position": position["net_position"], "needs_attention": issues}
 
 
 class FieldService(Protocol):
