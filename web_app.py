@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Flask, flash, redirect, render_template, request, url_for
 
 from app import BankDeposit, Payment, WorkOrder
+from audit_log import AuditLog
 from connector_factory import default_connector_hub
 from connectors import ConnectorHub
 from document_intake import proposal_from_extraction, record_approved_document
@@ -33,6 +34,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
         path.with_name(f"{path.stem}-provenance.json"),
         path.parent / f"{path.stem}-documents",
     )
+    audit = AuditLog(path.with_name(f"{path.stem}-audit.jsonl"))
 
     def save() -> None:
         save_bookkeeper(book, path)
@@ -63,6 +65,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             accounting_connected=hub.accounting is not None,
             document_connected=hub.documents is not None,
             source_documents=provenance.documents.values(),
+            audit_events=audit.events(),
         )
 
     @app.post("/work-orders")
@@ -112,6 +115,21 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             extracted = hub.documents.extract(temp_path)
             provenance.add_extraction(evidence.evidence_id, extracted)
             proposal = proposal_from_extraction(book, uploaded.filename, extracted)
+            audit.append(
+                "document.proposed",
+                evidence.evidence_id,
+                {
+                    "filename": uploaded.filename,
+                    "sha256": evidence.sha256,
+                    "vendor": proposal.vendor,
+                    "amount": str(proposal.amount),
+                    "reference": proposal.reference,
+                    "document_id": proposal.document_id,
+                    "work_order_id": proposal.work_order_id,
+                    "record_type": proposal.record_type,
+                },
+                actor="document_reader",
+            )
             hub.emit("document.extracted", {
                 "evidence_id": evidence.evidence_id,
                 "sha256": evidence.sha256,
@@ -141,19 +159,54 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             if source.approved_record_id:
                 raise ValueError("Source document is already bound to a bookkeeping record")
 
+            approved = {
+                "record_id": request.form.get("record_id", "").strip(),
+                "vendor": request.form.get("vendor", "").strip(),
+                "amount": request.form.get("amount", "").strip(),
+                "reference": request.form.get("reference", "").strip(),
+                "work_order_id": request.form.get("work_order_id", "").strip() or None,
+                "record_type": request.form.get("record_type", "vendor_bill"),
+                "treatment": request.form.get("treatment", "ask"),
+                "linked_cost_id": request.form.get("linked_cost_id", "").strip() or None,
+            }
+            proposed = {
+                "vendor": source.extracted_vendor,
+                "amount": source.extracted_amount,
+                "reference": source.extracted_reference,
+                "document_id": source.extracted_document_id,
+                "work_order_id": source.extracted_work_order_id,
+                "record_type": source.extracted_record_type,
+            }
+            changes = {
+                key: {"proposed": proposed.get(key), "approved": approved.get(key)}
+                for key in {"vendor", "amount", "reference", "work_order_id", "record_type"}
+                if str(proposed.get(key) or "") != str(approved.get(key) or "")
+            }
+
             record = record_approved_document(
                 book,
-                record_id=request.form.get("record_id", ""),
-                vendor=request.form.get("vendor", ""),
-                amount=Decimal(request.form["amount"]),
-                reference=request.form.get("reference", "").strip(),
-                work_order_id=request.form.get("work_order_id", "").strip() or None,
-                record_type=request.form.get("record_type", "vendor_bill"),
-                treatment=request.form.get("treatment", "ask"),
-                linked_cost_id=request.form.get("linked_cost_id", "").strip() or None,
+                record_id=approved["record_id"],
+                vendor=approved["vendor"],
+                amount=Decimal(approved["amount"]),
+                reference=approved["reference"],
+                work_order_id=approved["work_order_id"],
+                record_type=approved["record_type"],
+                treatment=approved["treatment"],
+                linked_cost_id=approved["linked_cost_id"],
             )
             record_type = "cost" if record.id in book.costs else "vendor_bill"
             provenance.bind_record(evidence_id, record_type, record.id)
+            audit.append(
+                "document.approved",
+                evidence_id,
+                {
+                    "proposal": proposed,
+                    "approved": approved,
+                    "changes": changes,
+                    "result": {"record_type": record_type, "record_id": record.id},
+                },
+                actor=request.form.get("actor", "user").strip() or "user",
+            )
             hub.emit("document.approved", {
                 "evidence_id": evidence_id,
                 "record_type": record_type,
@@ -163,7 +216,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
 
         record = run(action)
         if record is not None:
-            flash("Document approved, recorded, and bound to source evidence", "success")
+            flash("Document approved, recorded, and added to the decision audit trail", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/imports/work-orders/csv")
@@ -301,6 +354,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     app.config["BOOKKEEPER"] = book
     app.config["BOOKKEEPER_DATA_PATH"] = str(path)
     app.config["PROVENANCE"] = provenance
+    app.config["AUDIT_LOG"] = audit
     return app
 
 
