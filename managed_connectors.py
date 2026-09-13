@@ -48,6 +48,7 @@ class ManagedXeroConnector:
     def __init__(self, store: ConnectionStore, connection_id: str):
         self.store = store
         self.connection_id = connection_id
+        self._managed_connection_id = connection_id
 
     @property
     def capabilities(self):
@@ -98,32 +99,32 @@ def build_connector(store: ConnectionStore, connection_id: str):
     if provider == "xero":
         if record.status != "connected" or not data.get("access_token") or not data.get("tenant_id"):
             return None
-        return ManagedXeroConnector(store, connection_id)
-    if provider == "stripe":
-        return StripeConnector(secret_key=str(data["secret_key"]))
-    if provider == "jobber":
-        return JobberConnector(
+        connector = ManagedXeroConnector(store, connection_id)
+    elif provider == "stripe":
+        connector = StripeConnector(secret_key=str(data["secret_key"]))
+    elif provider == "jobber":
+        connector = JobberConnector(
             access_token=str(data["access_token"]),
             graphql_version=str(data.get("graphql_version") or "2025-04-16"),
         )
-    if provider == "housecall_pro":
-        return HousecallProConnector(api_key=str(data["api_key"]))
-    if provider == "quickbooks":
-        return QuickBooksOnlineConnector(
+    elif provider == "housecall_pro":
+        connector = HousecallProConnector(api_key=str(data["api_key"]))
+    elif provider == "quickbooks":
+        connector = QuickBooksOnlineConnector(
             realm_id=str(data["realm_id"]),
             access_token=str(data["access_token"]),
             sandbox=bool(data.get("sandbox")),
         )
-    if provider == "servicetitan":
-        return ServiceTitanConnector(
+    elif provider == "servicetitan":
+        connector = ServiceTitanConnector(
             jobs_url=str(data["jobs_url"]),
             access_token=str(data["access_token"]),
             app_key=str(data["app_key"]),
             field_map=dict(data.get("field_map") or {}),
             items_key=str(data.get("items_key") or "data"),
         )
-    if provider == "yardi":
-        return YardiMaintenanceConnector(
+    elif provider == "yardi":
+        connector = YardiMaintenanceConnector(
             base_url=str(data["base_url"]),
             work_orders_path=str(data["work_orders_path"]),
             auth_header=str(data.get("auth_header") or "Authorization"),
@@ -133,7 +134,11 @@ def build_connector(store: ConnectionStore, connection_id: str):
             response_format=str(data.get("response_format") or "json"),
             xml_item_tag=str(data.get("xml_item_tag") or "WorkOrder"),
         )
-    return None
+    else:
+        return None
+
+    setattr(connector, "_managed_connection_id", connection_id)
+    return connector
 
 
 def load_managed_connectors(hub: ConnectorHub, store: ConnectionStore) -> list[str]:
