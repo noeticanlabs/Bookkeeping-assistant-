@@ -19,6 +19,14 @@ PAYMENTS_READ = "payments.read"
 DEPOSITS_READ = "deposits.read"
 DOCUMENTS_EXTRACT = "documents.extract"
 
+_CAPABILITY_METHOD = {
+    WORK_ORDERS_READ: "pull_work_orders",
+    INVOICES_WRITE: "push_invoice",
+    PAYMENTS_READ: "pull_payments",
+    DEPOSITS_READ: "pull_deposits",
+    DOCUMENTS_EXTRACT: "extract",
+}
+
 
 class ConnectorIdentity(Protocol):
     name: str
@@ -53,6 +61,14 @@ class EventSink(Protocol):
     def emit(self, event: str, payload: dict[str, object]) -> None: ...
 
 
+def connector_has_capability(connector: object, capability: str) -> bool:
+    declared = getattr(connector, "capabilities", None)
+    if declared is not None:
+        return capability in declared
+    method = _CAPABILITY_METHOD.get(capability)
+    return bool(method and callable(getattr(connector, method, None)))
+
+
 @dataclass
 class ConnectorHub:
     """Capability-aware connector registry with backwards-compatible primaries."""
@@ -71,17 +87,16 @@ class ConnectorHub:
     def register(self, connector: object) -> object:
         if connector not in self.connectors:
             self.connectors.append(connector)
-        caps = getattr(connector, "capabilities", frozenset())
-        if self.field_service is None and WORK_ORDERS_READ in caps:
+        if self.field_service is None and connector_has_capability(connector, WORK_ORDERS_READ):
             self.field_service = connector  # compatibility primary
-        if self.accounting is None and ({PAYMENTS_READ, DEPOSITS_READ, INVOICES_WRITE} & set(caps)):
+        if self.accounting is None and any(connector_has_capability(connector, cap) for cap in (PAYMENTS_READ, DEPOSITS_READ, INVOICES_WRITE)):
             self.accounting = connector  # compatibility primary
-        if self.documents is None and DOCUMENTS_EXTRACT in caps:
+        if self.documents is None and connector_has_capability(connector, DOCUMENTS_EXTRACT):
             self.documents = connector
         return connector
 
     def with_capability(self, capability: str) -> list[object]:
-        return [c for c in self.connectors if capability in getattr(c, "capabilities", frozenset())]
+        return [c for c in self.connectors if connector_has_capability(c, capability)]
 
     def work_order_sources(self) -> list[object]:
         return self.with_capability(WORK_ORDERS_READ)
