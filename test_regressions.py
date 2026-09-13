@@ -6,20 +6,22 @@ from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, VendorBill, Wor
 
 def test_payment_cannot_overpay_invoice():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
     book.add_payment(Payment("PAY-1", Decimal("101")))
     with pytest.raises(ValueError):
         book.match_payment("PAY-1", "INV-1")
 
 
-def test_unknown_prelinked_invoice_is_flagged():
+def test_unknown_prelinked_invoice_is_rejected():
     book = Bookkeeper()
-    book.add_payment(Payment("PAY-1", Decimal("50"), invoice_id="INV-MISSING"))
-    assert any(item.kind == "unmatched_payment" for item in book.review())
+    with pytest.raises(ValueError, match="Unknown invoice"):
+        book.add_payment(Payment("PAY-1", Decimal("50"), invoice_id="INV-MISSING"))
 
 
 def test_duplicate_payment_id_cannot_double_count_invoice():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
     book.add_payment(Payment("PAY-1", Decimal("40"), invoice_id="INV-1"))
     with pytest.raises(ValueError):
@@ -46,12 +48,15 @@ def test_same_payment_cannot_reconcile_multiple_deposits():
 
 def test_draft_invoice_is_not_counted_as_expected_receivable():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
     book.add_invoice(Invoice("DRAFT-WO-1", "WO-1", "Smith", Decimal("500"), status="draft"))
     assert book.near_term_position()["expected_in"] == Decimal("0")
 
 
 def test_duplicate_invoice_id_is_rejected():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
+    book.add_work_order(WorkOrder("WO-2", "Jones", "Repair"))
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
     with pytest.raises(ValueError):
         book.add_invoice(Invoice("INV-1", "WO-2", "Jones", Decimal("200")))
@@ -80,6 +85,7 @@ def test_duplicate_deposit_id_is_rejected():
 
 def test_invoice_must_have_positive_total_and_valid_paid_amount():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
     with pytest.raises(ValueError):
         book.add_invoice(Invoice("INV-0", "WO-1", "Smith", Decimal("0")))
     with pytest.raises(ValueError):
@@ -88,6 +94,7 @@ def test_invoice_must_have_positive_total_and_valid_paid_amount():
 
 def test_prelinked_payment_cannot_overpay_invoice():
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
     with pytest.raises(ValueError):
         book.add_payment(Payment("PAY-1", Decimal("101"), invoice_id="INV-1"))
