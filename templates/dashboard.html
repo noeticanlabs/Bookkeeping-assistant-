@@ -17,6 +17,7 @@
     .error { background:#ffecec; padding:.65rem; border-radius:6px; }
     .success { background:#edf9ed; padding:.65rem; border-radius:6px; }
     .ready { font-weight:700; }
+    code { overflow-wrap:anywhere; }
     small { opacity:.75; }
   </style>
 </head>
@@ -87,15 +88,30 @@
   <h2>Read receipt or vendor invoice</h2>
   <div class="card">
     {% if document_connected %}
-      <p><small>The document reader extracts a proposal only. You review vendor, amount, job, and treatment before anything is recorded.</small></p>
+      <p><small>The document reader extracts a proposal only. The original upload is fingerprinted and preserved before review.</small></p>
       <form method="post" action="/documents/extract" enctype="multipart/form-data">
         <input type="file" name="file" accept="image/*,.pdf" required>
         <button>Read document</button>
       </form>
     {% else %}
-      <p><small>No document-reading connector configured yet. A future OCR/AI adapter plugs into the existing DocumentConnector hook without changing bookkeeping logic.</small></p>
+      <p><small>No document-reading connector configured yet.</small></p>
     {% endif %}
   </div>
+
+  {% if source_documents %}
+  <h2>Source document provenance</h2>
+  <table>
+    <tr><th>Evidence</th><th>Original source</th><th>Extracted</th><th>Bound bookkeeping record</th></tr>
+    {% for doc in source_documents %}
+      <tr>
+        <td>{{ doc.evidence_id }}<br><small><code>{{ doc.sha256[:16] }}…</code></small></td>
+        <td>{{ doc.original_filename }}<br><small>{{ doc.size_bytes }} bytes</small></td>
+        <td>{{ doc.extracted_vendor or '—' }}{% if doc.extracted_amount %} — ${{ doc.extracted_amount }}{% endif %}<br><small>{{ doc.extracted_reference or 'No reference' }}</small></td>
+        <td>{% if doc.approved_record_id %}{{ doc.approved_record_type }} {{ doc.approved_record_id }}{% else %}Not approved / bound yet{% endif %}</td>
+      </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
 
   <h2>Add completed work order manually</h2>
   <form method="post" action="/work-orders">
