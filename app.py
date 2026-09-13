@@ -93,6 +93,26 @@ class Bookkeeper:
     def invoice_for(self, work_order_id: str) -> Invoice | None:
         return next((i for i in self.invoices.values() if i.work_order_id == work_order_id), None)
 
+    def prepare_invoice(self, work_order_id: str, total: Money | None = None) -> Invoice:
+        wo = self.work_orders[work_order_id]
+        if wo.status != "complete":
+            raise ValueError("Work order must be complete before preparing an invoice")
+        if self.invoice_for(work_order_id):
+            raise ValueError("Work order already has an invoice")
+
+        invoice_total = total if total is not None else wo.quoted_total
+        if invoice_total is None or invoice_total <= 0:
+            raise ValueError("Invoice needs a positive total")
+
+        invoice = Invoice(
+            id=f"DRAFT-{work_order_id}",
+            work_order_id=wo.id,
+            customer=wo.customer,
+            total=invoice_total,
+        )
+        self.add_invoice(invoice)
+        return invoice
+
     def job_cost(self, work_order_id: str) -> Money:
         return sum(
             (c.amount for c in self.costs.values() if c.work_order_id == work_order_id),
@@ -134,15 +154,10 @@ class Bookkeeper:
         )
 
     def completed_job_invoice_reviews(self) -> list[InvoiceReview]:
-        return [
-            self.review_invoice(wo.id)
-            for wo in self.work_orders.values()
-            if wo.status == "complete"
-        ]
+        return [self.review_invoice(wo.id) for wo in self.work_orders.values() if wo.status == "complete"]
 
     def review(self) -> list[ReviewItem]:
         issues: list[ReviewItem] = []
-
         for result in self.completed_job_invoice_reviews():
             for message in result.issues:
                 kind = "unbilled_job" if result.invoice_id is None else "invoice_review"
@@ -157,7 +172,6 @@ class Bookkeeper:
         for payment in self.payments.values():
             if payment.invoice_id is None or payment.invoice_id not in self.invoices:
                 issues.append(ReviewItem("unmatched_payment", "Payment is not matched to an invoice", payment.id))
-
         return issues
 
 
