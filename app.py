@@ -27,6 +27,7 @@ class Cost:
     amount: Money
     kind: str
     work_order_id: str | None = None
+    reference: str | None = None
 
 
 @dataclass
@@ -80,7 +81,16 @@ class Bookkeeper:
         self.work_orders[work_order.id] = work_order
 
     def add_cost(self, cost: Cost) -> None:
+        if cost.amount <= 0:
+            raise ValueError("Cost amount must be greater than zero")
         self.costs[cost.id] = cost
+
+    def match_cost(self, cost_id: str, work_order_id: str) -> Cost:
+        if work_order_id not in self.work_orders:
+            raise ValueError("Unknown work order")
+        cost = self.costs[cost_id]
+        cost.work_order_id = work_order_id
+        return cost
 
     def add_invoice(self, invoice: Invoice) -> None:
         self.invoices[invoice.id] = invoice
@@ -99,25 +109,15 @@ class Bookkeeper:
             raise ValueError("Work order must be complete before preparing an invoice")
         if self.invoice_for(work_order_id):
             raise ValueError("Work order already has an invoice")
-
         invoice_total = total if total is not None else wo.quoted_total
         if invoice_total is None or invoice_total <= 0:
             raise ValueError("Invoice needs a positive total")
-
-        invoice = Invoice(
-            id=f"DRAFT-{work_order_id}",
-            work_order_id=wo.id,
-            customer=wo.customer,
-            total=invoice_total,
-        )
+        invoice = Invoice(f"DRAFT-{work_order_id}", wo.id, wo.customer, invoice_total)
         self.add_invoice(invoice)
         return invoice
 
     def job_cost(self, work_order_id: str) -> Money:
-        return sum(
-            (c.amount for c in self.costs.values() if c.work_order_id == work_order_id),
-            Decimal("0"),
-        )
+        return sum((c.amount for c in self.costs.values() if c.work_order_id == work_order_id), Decimal("0"))
 
     def job_profit(self, work_order_id: str) -> Money | None:
         invoice = self.invoice_for(work_order_id)
@@ -127,10 +127,8 @@ class Bookkeeper:
         wo = self.work_orders[work_order_id]
         invoice = self.invoice_for(work_order_id)
         issues: list[str] = []
-
         if wo.status != "complete":
             issues.append("Work order is not complete")
-
         if invoice is None:
             issues.append("Completed work order has no invoice")
         else:
@@ -140,17 +138,12 @@ class Bookkeeper:
                 issues.append("Invoice total differs from quoted total")
             if invoice.total <= 0:
                 issues.append("Invoice total must be greater than zero")
-
         ready = wo.status == "complete" and invoice is not None and not issues
         return InvoiceReview(
-            work_order_id=wo.id,
-            status="ready" if ready else "needs_attention",
-            invoice_id=invoice.id if invoice else None,
-            quoted_total=wo.quoted_total,
-            invoice_total=invoice.total if invoice else None,
-            job_cost=self.job_cost(wo.id),
-            profit=self.job_profit(wo.id),
-            issues=issues,
+            wo.id, "ready" if ready else "needs_attention",
+            invoice.id if invoice else None, wo.quoted_total,
+            invoice.total if invoice else None, self.job_cost(wo.id),
+            self.job_profit(wo.id), issues,
         )
 
     def completed_job_invoice_reviews(self) -> list[InvoiceReview]:
@@ -162,13 +155,11 @@ class Bookkeeper:
             for message in result.issues:
                 kind = "unbilled_job" if result.invoice_id is None else "invoice_review"
                 issues.append(ReviewItem(kind, message, result.invoice_id or result.work_order_id))
-
         for cost in self.costs.values():
             if cost.work_order_id and cost.work_order_id not in self.work_orders:
                 issues.append(ReviewItem("unknown_job", "Cost references an unknown work order", cost.id))
             elif cost.work_order_id is None:
                 issues.append(ReviewItem("unassigned_cost", "Cost is not assigned to a job or overhead", cost.id))
-
         for payment in self.payments.values():
             if payment.invoice_id is None or payment.invoice_id not in self.invoices:
                 issues.append(ReviewItem("unmatched_payment", "Payment is not matched to an invoice", payment.id))
