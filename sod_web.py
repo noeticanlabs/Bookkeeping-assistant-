@@ -6,6 +6,7 @@ from decimal import Decimal
 from flask import flash, redirect, render_template, request, session, url_for
 
 from approval_policy import ApprovalPolicy, ApprovalPolicyStore
+from atomic_uow import AtomicApprovalUnitOfWork
 from document_intake import record_approved_document
 from workflow_policy import ACTION_TYPES, WorkflowPolicyStore
 
@@ -30,6 +31,7 @@ def install_separation_of_duties(app, db_path):
         return redirect(url_for("dashboard"))
 
     def finalize_document(payload, evidence_id, actor, request_id=None, approver_ids=None):
+        """Direct (zero-approval) path. Governed approval requests use AtomicApprovalUnitOfWork."""
         book = app.config["BOOKKEEPER"]
         treatment = payload["treatment"]
         if payload["record_type"] == "vendor_bill" and treatment == "ask" and book.vendor_bill_mode != "ask":
@@ -194,32 +196,17 @@ def install_separation_of_duties(app, db_path):
         if not permissions.user_has(u, "corrections.approve"):
             return deny("Approval permission required")
         try:
-            req, count, ready = approvals.record_approval(request_id, u.user_id)
-            app.config["AUDIT_LOG"].append(
-                "approval.recorded", f"APPROVAL:{request_id}",
-                {"request_id": request_id, "subject_type": req.subject_type, "subject_id": req.subject_id,
-                 "approval_number": count, "required_approvals": req.required_approvals,
-                 "authenticated_user_id": u.user_id}, actor=ident(u),
+            uow = AtomicApprovalUnitOfWork(
+                db_path,
+                app.config["BOOKKEEPER"],
+                app.config["PROVENANCE"],
+                app.config["CORRECTIONS"],
             )
-            if not ready:
-                flash(f"Approval recorded; {req.required_approvals - count} more approval(s) required", "success")
-                return redirect(url_for("approval_queue"))
-
-            if req.subject_type == "cost_correction":
-                correction = app.config["CORRECTIONS"].approve(app.config["BOOKKEEPER"], req.subject_id, ident(u))
-                app.config["SAVE_BOOKKEEPER"]()
-                app.config["AUDIT_LOG"].append(
-                    "cost.correction.finalized", f"CORRECTION:{req.subject_id}",
-                    {"replacement_cost_id": correction.id, "approver_ids": approvals.approver_ids(request_id)},
-                    actor=ident(u),
-                )
-            elif req.subject_type == "document":
-                finalize_document(req.payload, req.subject_id, ident(u), request_id,
-                                  approvals.approver_ids(request_id))
+            count, required, finalized = uow.approve(request_id, u.user_id, ident(u))
+            if finalized:
+                flash("Required independent approvals satisfied; financial state updated atomically", "success")
             else:
-                raise ValueError("Unsupported approval subject")
-            approvals.complete(request_id)
-            flash("Required independent approvals satisfied; financial state updated", "success")
+                flash(f"Approval recorded; {required - count} more approval(s) required", "success")
         except (ValueError, KeyError) as exc:
             flash(str(exc), "error")
         return redirect(url_for("approval_queue"))
