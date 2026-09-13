@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from app import Invoice, WorkOrder
 from connectors import ConnectorHub, INVOICES_WRITE
+from readiness import build_readiness
 from secure_web_app import create_secure_app
 from sync_reliability import SyncReliabilityStore
 
@@ -85,3 +86,17 @@ def test_invoice_uncertain_delivery_stays_draft_and_is_not_resent(tmp_path):
         app.view_functions["issue_invoice"]("INV-1")
     assert sink.calls == 1
     assert book.invoices["INV-1"].status == "draft"
+
+
+def test_uncertain_outbound_delivery_blocks_readiness(tmp_path):
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=ConnectorHub())
+    app.config.update(TESTING=True)
+    sync = app.config["SYNC_RELIABILITY"]
+    item = sync.enqueue("CONN-1", "Xero", "invoice.push", "invoice", "INV-9", {})
+    sync.begin_send(item.item_id)
+    sync.mark_uncertain(item.item_id, "timeout after transmission")
+
+    items = build_readiness(app)
+    blocker = next(item for item in items if item.title == "Uncertain outbound deliveries")
+    assert blocker.blocking is True
+    assert blocker.status == "missing"
