@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Bookkeeping Verifications</title>
+  <style>
+    body { font-family: sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; margin:1rem 0; }
+    .card { border:1px solid #ddd; padding:1rem; border-radius:8px; }
+    .metric { font-size:1.5rem; font-weight:700; }
+    table { width:100%; border-collapse:collapse; margin-top:1rem; }
+    th, td { text-align:left; padding:.65rem; border-bottom:1px solid #ddd; vertical-align:top; }
+    .FAIL { font-weight:700; }
+    .UNKNOWN { font-weight:700; }
+    details { max-width:420px; }
+    code { overflow-wrap:anywhere; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('exception_dashboard') }}">Exceptions</a>
+    <a href="{{ url_for('relationship_dashboard') }}">Relationships</a>
+    <a href="{{ url_for('sync_status') }}">Sync Status</a>
+  </nav>
+
+  <h1>Deterministic Verifications</h1>
+  <p>These checks evaluate bookkeeping identities and relationships. A PASS is evidence that a rule holds; it does not grant posting or payment authority.</p>
+
+  <section class="grid">
+    <div class="card"><small>Pass</small><div class="metric">{{ summary.pass }}</div></div>
+    <div class="card"><small>Fail</small><div class="metric">{{ summary.fail }}</div></div>
+    <div class="card"><small>Unknown</small><div class="metric">{{ summary.unknown }}</div></div>
+    <div class="card"><small>Review required</small><div class="metric">{{ summary.review_required }}</div></div>
+  </section>
+
+  <table>
+    <thead>
+      <tr><th>Status</th><th>Verifier</th><th>Object</th><th>Result</th><th>Evidence</th></tr>
+    </thead>
+    <tbody>
+    {% for result in results %}
+      <tr>
+        <td class="{{ result.status }}">{{ result.status }}<br><small>{{ result.severity }}</small></td>
+        <td><strong>{{ result.verifier_id }}</strong><br><small>{{ result.title }}</small></td>
+        <td>{{ result.object_type }}<br><code>{{ result.object_id }}</code></td>
+        <td>{{ result.summary }}{% if result.review_required %}<br><strong>Review required</strong>{% endif %}</td>
+        <td>
+          <details>
+            <summary>Show evidence</summary>
+            <table>
+              {% for key, value in result.evidence.items() %}
+              <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+              {% endfor %}
+            </table>
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
