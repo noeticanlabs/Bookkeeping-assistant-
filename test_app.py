@@ -6,7 +6,7 @@ from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, VendorBill, Wor
 
 def test_near_term_position_is_open_ar_minus_open_ap():
     book = Bookkeeper()
-    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("2000"), amount_paid=Decimal("500")))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("2000"), status="issued", amount_paid=Decimal("500")))
     book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("900"), amount_paid=Decimal("200")))
     position = book.near_term_position()
     assert position["expected_in"] == Decimal("1500")
@@ -16,14 +16,14 @@ def test_near_term_position_is_open_ar_minus_open_ap():
 
 def test_paid_items_do_not_affect_near_term_position():
     book = Bookkeeper()
-    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("500"), amount_paid=Decimal("500")))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("500"), status="issued", amount_paid=Decimal("500")))
     book.add_vendor_bill(VendorBill("BILL-1", "City", Decimal("75"), amount_paid=Decimal("75")))
     assert book.near_term_position()["net_position"] == Decimal("0")
 
 
 def test_attention_summary_includes_near_term_position():
     book = Bookkeeper()
-    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("1000"), amount_paid=Decimal("250")))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("1000"), status="issued", amount_paid=Decimal("250")))
     book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("400")))
     summary = book.attention_summary()
     assert summary["open_invoice_balance"] == Decimal("750")
@@ -53,7 +53,7 @@ def test_clean_customer_cash_chain_still_works():
     book.add_work_order(WorkOrder("WO-1", "Smith", "Water heater", "complete", Decimal("2000")))
     book.add_cost(Cost("C-1", "Ferguson", Decimal("700"), "materials", reference="WO-1"))
     book.accept_cost_match("C-1")
-    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("2000")))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("2000"), status="issued"))
     book.add_payment(Payment("PAY-1", Decimal("2000"), reference="INV-1"))
     book.accept_payment_match("PAY-1")
     book.add_deposit(BankDeposit("DEP-1", Decimal("1940"), reference="PAY-1", processor_fee=Decimal("60")))
