@@ -3,6 +3,7 @@
 import os
 
 from auth_web import install_auth
+from onboarding import install_onboarding
 from sod_web import install_separation_of_duties
 from sqlite_store import save_bookkeeper
 from web_app import create_app
@@ -14,6 +15,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
     install_auth(app, db_path)
     install_separation_of_duties(app, db_path)
+    install_onboarding(app, db_path)
     return app
 
 
