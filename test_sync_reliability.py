@@ -1,0 +1,87 @@
+from decimal import Decimal
+
+from app import Invoice, WorkOrder
+from connectors import ConnectorHub, INVOICES_WRITE
+from secure_web_app import create_secure_app
+from sync_reliability import SyncReliabilityStore
+
+
+def test_sync_runs_record_success_and_failure(tmp_path):
+    store = SyncReliabilityStore(tmp_path / "bookkeeper.sqlite3")
+    ok = store.start_run("CONN-1", "Source", "payments.read")
+    store.finish_run(ok, added=3, skipped=2)
+    bad = store.start_run("CONN-1", "Source", "deposits.read")
+    store.fail_run(bad, "provider unavailable")
+
+    runs = store.list_runs()
+    by_id = {run.run_id: run for run in runs}
+    assert by_id[ok].status == "success"
+    assert by_id[ok].added == 3
+    assert by_id[ok].skipped == 2
+    assert by_id[bad].status == "failed"
+    assert by_id[bad].error == "provider unavailable"
+    assert store.last_success("CONN-1", "payments.read").run_id == ok
+    assert store.last_success("CONN-1", "deposits.read") is None
+
+
+def test_outbox_idempotency_returns_same_item(tmp_path):
+    store = SyncReliabilityStore(tmp_path / "bookkeeper.sqlite3")
+    first = store.enqueue("CONN-1", "Xero", "invoice.push", "invoice", "INV-7", {"total": "50"})
+    second = store.enqueue("CONN-1", "Xero", "invoice.push", "invoice", "INV-7", {"total": "50"})
+
+    assert first.item_id == second.item_id
+    assert len(store.list_outbox()) == 1
+
+
+def test_uncertain_outbox_never_auto_retries(tmp_path):
+    store = SyncReliabilityStore(tmp_path / "bookkeeper.sqlite3")
+    item = store.enqueue("CONN-1", "Xero", "invoice.push", "invoice", "INV-7", {})
+    store.begin_send(item.item_id)
+    store.mark_uncertain(item.item_id, "connection reset after send")
+
+    try:
+        store.begin_send(item.item_id)
+        assert False, "uncertain write must not auto-retry"
+    except ValueError as exc:
+        assert "not retryable" in str(exc)
+
+    store.reset_uncertain(item.item_id)
+    retry = store.begin_send(item.item_id)
+    assert retry.attempts == 2
+
+
+class UncertainInvoiceSink:
+    name = "Remote Ledger"
+    capabilities = frozenset({INVOICES_WRITE})
+
+    def __init__(self):
+        self.calls = 0
+
+    def push_invoice(self, invoice):
+        self.calls += 1
+        raise RuntimeError("response lost after transmission")
+
+
+def test_invoice_uncertain_delivery_stays_draft_and_is_not_resent(tmp_path):
+    hub = ConnectorHub()
+    sink = UncertainInvoiceSink()
+    hub.register(sink)
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=hub)
+    app.config.update(TESTING=True)
+    book = app.config["BOOKKEEPER"]
+    book.add_work_order(WorkOrder("WO-1", "Customer", "Repair", status="complete"))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Customer", Decimal("100")))
+
+    with app.test_request_context("/invoice/INV-1/issue", method="POST"):
+        response = app.view_functions["issue_invoice"]("INV-1")
+        assert response.status_code in (302, 303)
+    assert sink.calls == 1
+    assert book.invoices["INV-1"].status == "draft"
+    outbox = app.config["SYNC_RELIABILITY"].list_outbox()
+    assert len(outbox) == 1
+    assert outbox[0].status == "uncertain"
+
+    with app.test_request_context("/invoice/INV-1/issue", method="POST"):
+        app.view_functions["issue_invoice"]("INV-1")
+    assert sink.calls == 1
+    assert book.invoices["INV-1"].status == "draft"
