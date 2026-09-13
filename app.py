@@ -58,6 +58,18 @@ class ReviewItem:
 
 
 @dataclass
+class InvoiceReview:
+    work_order_id: str
+    status: str
+    invoice_id: str | None
+    quoted_total: Money | None
+    invoice_total: Money | None
+    job_cost: Money
+    profit: Money | None
+    issues: list[str]
+
+
+@dataclass
 class Bookkeeper:
     work_orders: dict[str, WorkOrder] = field(default_factory=dict)
     costs: dict[str, Cost] = field(default_factory=dict)
@@ -78,6 +90,9 @@ class Bookkeeper:
         if payment.invoice_id and payment.invoice_id in self.invoices:
             self.invoices[payment.invoice_id].amount_paid += payment.amount
 
+    def invoice_for(self, work_order_id: str) -> Invoice | None:
+        return next((i for i in self.invoices.values() if i.work_order_id == work_order_id), None)
+
     def job_cost(self, work_order_id: str) -> Money:
         return sum(
             (c.amount for c in self.costs.values() if c.work_order_id == work_order_id),
@@ -85,25 +100,53 @@ class Bookkeeper:
         )
 
     def job_profit(self, work_order_id: str) -> Money | None:
-        invoice = next(
-            (i for i in self.invoices.values() if i.work_order_id == work_order_id),
-            None,
-        )
+        invoice = self.invoice_for(work_order_id)
+        return None if invoice is None else invoice.total - self.job_cost(work_order_id)
+
+    def review_invoice(self, work_order_id: str) -> InvoiceReview:
+        wo = self.work_orders[work_order_id]
+        invoice = self.invoice_for(work_order_id)
+        issues: list[str] = []
+
+        if wo.status != "complete":
+            issues.append("Work order is not complete")
+
         if invoice is None:
-            return None
-        return invoice.total - self.job_cost(work_order_id)
+            issues.append("Completed work order has no invoice")
+        else:
+            if invoice.customer != wo.customer:
+                issues.append("Invoice customer does not match work order")
+            if wo.quoted_total is not None and invoice.total != wo.quoted_total:
+                issues.append("Invoice total differs from quoted total")
+            if invoice.total <= 0:
+                issues.append("Invoice total must be greater than zero")
+
+        ready = wo.status == "complete" and invoice is not None and not issues
+        return InvoiceReview(
+            work_order_id=wo.id,
+            status="ready" if ready else "needs_attention",
+            invoice_id=invoice.id if invoice else None,
+            quoted_total=wo.quoted_total,
+            invoice_total=invoice.total if invoice else None,
+            job_cost=self.job_cost(wo.id),
+            profit=self.job_profit(wo.id),
+            issues=issues,
+        )
+
+    def completed_job_invoice_reviews(self) -> list[InvoiceReview]:
+        return [
+            self.review_invoice(wo.id)
+            for wo in self.work_orders.values()
+            if wo.status == "complete"
+        ]
 
     def review(self) -> list[ReviewItem]:
         issues: list[ReviewItem] = []
 
-        for wo in self.work_orders.values():
-            invoice = next((i for i in self.invoices.values() if i.work_order_id == wo.id), None)
-            if wo.status == "complete" and invoice is None:
-                issues.append(ReviewItem("unbilled_job", "Completed work order has no invoice", wo.id))
-            elif invoice and invoice.customer != wo.customer:
-                issues.append(ReviewItem("invoice_mismatch", "Invoice customer does not match work order", invoice.id))
-            elif invoice and wo.quoted_total is not None and invoice.total != wo.quoted_total:
-                issues.append(ReviewItem("invoice_total", "Invoice total differs from quoted total", invoice.id))
+        for result in self.completed_job_invoice_reviews():
+            for message in result.issues:
+                kind = "unbilled_job" if result.invoice_id is None else "invoice_review"
+                issues.append(ReviewItem(kind, message, result.invoice_id or result.work_order_id))
 
         for cost in self.costs.values():
             if cost.work_order_id and cost.work_order_id not in self.work_orders:
@@ -118,7 +161,6 @@ class Bookkeeper:
         return issues
 
 
-# Integration hooks. Vendor-specific adapters implement these interfaces.
 class FieldService(Protocol):
     def work_orders(self) -> list[WorkOrder]: ...
     def invoices(self) -> list[Invoice]: ...
