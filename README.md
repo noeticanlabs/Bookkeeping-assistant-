@@ -1,107 +1,158 @@
 # Bookkeeper Assistant
 
-A small bookkeeping bridge for field-service businesses.
+A configurable, governed bookkeeping workflow engine for field-service and service businesses.
 
-## KISS product boundary
+## Product boundary
 
 `Work Order -> Cost -> Invoice -> Payment -> Bank -> Books`
 
-If normal code can determine something exactly, do not ask AI.
+The design rule is simple:
 
-The current usable MVP focuses on one workflow:
+**If normal code can determine something exactly, do not ask AI.**
 
-`Completed Job -> Prepare Invoice -> Issue Invoice -> Record Payment -> Record Bank Deposit -> Reconcile`
+AI is used for interpretation and proposals. Authenticated users authorize consequential actions. Deterministic bookkeeping code records financial state, while provenance and audit history preserve the evidence chain.
 
-It also keeps optional hooks for field-service, accounting, document-reading, and event integrations so future ServiceTitan/Jobber/Housecall Pro/QuickBooks-style adapters can plug in without changing the core workflow.
+## Current application
 
-## Run the app
+The secure application entrypoint is:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python web_app.py
+```text
+secure_web_app.py
 ```
 
-Open `http://127.0.0.1:5000`.
+The current runtime includes:
 
-Data is stored in `bookkeeper-data.json` by default. Set `BOOKKEEPER_DATA` to use another path and `BOOKKEEPER_SECRET` before any real deployment.
+- SQLite authoritative persistence
+- authenticated users and hashed passwords
+- configurable roles and permissions
+- company-specific terminology and policies
+- guided company onboarding
+- configurable approval workflows
+- separation of duties and multi-person approval
+- work-order / job-cost / invoice / payment / bank workflow
+- accounts receivable and payable views
+- source-document provenance and SHA-256 duplicate detection
+- append-only decision audit history
+- governed cost corrections
+- optional field-service, accounting, document, and event connector hooks
+- configuration/readiness reporting
 
-## Real receipt/vendor-invoice extraction
+## Installation
 
-The runnable app automatically enables the OpenAI document connector when `OPENAI_API_KEY` is present.
+Detailed Windows and Linux installation instructions, prerequisites, dependencies, environment variables, data locations, and verification steps are in:
+
+**`INSTALL.md`**
+
+### Linux quick install
+
+```bash
+git clone https://github.com/noeticanlabs/Bookkeeping-assistant-.git
+cd Bookkeeping-assistant-
+git checkout kiss-fresh
+chmod +x scripts/install_linux.sh
+./scripts/install_linux.sh
+
+source .venv/bin/activate
+export BOOKKEEPER_SECRET="replace-with-a-long-random-secret"
+python secure_web_app.py
+```
+
+### Windows quick install
+
+```powershell
+git clone https://github.com/noeticanlabs/Bookkeeping-assistant-.git
+Set-Location Bookkeeping-assistant-
+git checkout kiss-fresh
+powershell -ExecutionPolicy Bypass -File .\scripts\install_windows.ps1
+
+$env:BOOKKEEPER_SECRET="replace-with-a-long-random-secret"
+.\.venv\Scripts\python.exe secure_web_app.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:5000
+```
+
+## Dependencies
+
+Baseline:
+
+- Python 3.12+
+- Flask 3.1+
+- SQLite through Python's standard library
+
+Installed by `requirements.txt`:
+
+- `Flask>=3.1,<4` — application runtime
+- `openai>=2,<3` — optional document-extraction connector
+- `pytest>=9,<10` — regression testing
+
+Git is recommended for cloning and updating the application.
+
+## First run
+
+1. Start `secure_web_app.py`.
+2. Create the first Administrator account.
+3. Complete the Company Setup Wizard.
+4. Open `/readiness`.
+5. Resolve blocking items and connect any external systems required by the company.
+
+The readiness page distinguishes a system merely selected in configuration from an adapter that is actually loaded and connected.
+
+## Optional document extraction
+
+The application automatically enables the OpenAI document connector when `OPENAI_API_KEY` is present.
+
+Linux:
 
 ```bash
 export OPENAI_API_KEY="your-key"
-# optional; defaults to gpt-5.6-luna
-export BOOKKEEPER_DOCUMENT_MODEL="gpt-5.6-luna"
-python web_app.py
+export BOOKKEEPER_DOCUMENT_MODEL="gpt-5.6-luna"   # optional
+python secure_web_app.py
 ```
 
-Supported upload types are PDF, PNG, JPG/JPEG, and WEBP, up to 20 MB by default.
+Windows PowerShell:
 
-The document model only proposes structured fields such as vendor, amount, document/reference ID, explicit work-order ID, and whether the document appears to be a vendor bill or paid cost. Extraction never posts accounting state. The user reviews and may edit the proposal before approval.
-
-`OPENAI_API_KEY` is read from the environment only; it is not stored in the repository or bookkeeping JSON file.
-
-## Current capabilities
-
-- completed work orders and quote totals
-- CSV work-order import
-- live field-service work-order sync hook
-- real receipt/vendor-invoice interpretation through an optional OpenAI connector
-- human review before document-derived bookkeeping records are created
-- job costs and vendor-bill cost treatment
-- draft invoice preparation and invoice review
-- invoice issuance
-- partial/full customer payments
-- processor fees and bank-deposit reconciliation
-- accounts receivable and payable summaries
-- near-term AR minus AP snapshot
-- attention/exception queue
-- JSON persistence
-- optional connector hooks
-
-## Work-order import contract
-
-All external sources normalize into the same internal `WorkOrder` model.
-
-CSV files require:
-
-```text
-id,customer,description
+```powershell
+$env:OPENAI_API_KEY="your-key"
+$env:BOOKKEEPER_DOCUMENT_MODEL="gpt-5.6-luna"   # optional
+.\.venv\Scripts\python.exe secure_web_app.py
 ```
 
-and may include:
-
-```text
-status,quoted_total
-```
-
-Example:
-
-```csv
-id,customer,description,status,quoted_total
-WO-1842,Smith Residence,Water heater replacement,complete,2450.00
-```
-
-A live field-service adapter implements `pull_work_orders()` and returns normalized `WorkOrder` objects. CSV import and live connector sync then use the exact same import service, duplicate handling, persistence, invoice workflow, and downstream bookkeeping rules.
+Supported uploads currently include PDF, PNG, JPG/JPEG, and WEBP. The document model proposes structured fields; it does not directly mutate bookkeeping state.
 
 ## Integration hooks
 
-`connectors.py` defines optional contracts for:
+`connectors.py` defines vendor-neutral contracts for:
 
 - field-service systems: pull work orders and issue invoices
 - accounting systems: push invoices and pull payments/deposits
 - document extraction: convert receipts/bills into structured proposals
 - event sinks / automation: observe workflow events without owning bookkeeping state
 
-Vendor-specific adapters remain thin transport/translation layers. They should not contain bookkeeping policy that belongs in the core.
+Vendor-specific adapters should remain transport/translation layers. Bookkeeping policy stays in the core.
+
+## Data and evidence
+
+SQLite is authoritative for application/configuration/audit state. Uploaded source documents remain in a separate local evidence vault and are linked to financial records through provenance metadata.
+
+Back up the SQLite database and evidence directory together to preserve the complete financial evidence chain.
 
 ## Run tests
 
+Linux:
+
 ```bash
+source .venv/bin/activate
 pytest -q
 ```
 
-CI runs the complete test suite on every push to `kiss-fresh`.
+Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+CI runs the complete regression suite on every push to `kiss-fresh`.
