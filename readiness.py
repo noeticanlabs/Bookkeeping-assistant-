@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from flask import render_template, session
+from flask import render_template
 
 
 @dataclass(frozen=True)
@@ -84,8 +84,8 @@ def build_readiness(app) -> list[ReadinessItem]:
         items.append(ReadinessItem("Storage", "missing", "SQLite database", "Authoritative SQLite database is not present.", True))
 
     provenance = app.config["PROVENANCE"]
-    vault = Path(provenance.vault_dir) if hasattr(provenance, "vault_dir") else None
-    if vault is not None and vault.exists():
+    vault = Path(provenance.document_dir)
+    if vault.exists():
         items.append(ReadinessItem("Evidence", "ready", "Document evidence vault", "Source-document evidence storage is available."))
     else:
         items.append(ReadinessItem("Evidence", "warning", "Document evidence vault", "Evidence vault will be created when the first source document is captured."))
@@ -98,11 +98,10 @@ def install_readiness(app):
     def readiness_summary():
         items = build_readiness(app)
         blockers = [item for item in items if item.blocking]
-        ready = len(blockers) == 0
         return render_template(
             "readiness.html",
             items=items,
-            ready=ready,
+            ready=len(blockers) == 0,
             blocker_count=len(blockers),
             profile=app.config["COMPANY_CONFIG"].profile,
         )
