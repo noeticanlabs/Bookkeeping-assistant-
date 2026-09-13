@@ -45,6 +45,17 @@ def install_onboarding(app, db_path):
     def identity(user):
         return f"{user.display_name} [{user.username}] ({user.role})"
 
+    @app.before_request
+    def require_initial_company_setup():
+        if state.completed() or users.count() == 0:
+            return None
+        if request.endpoint in {"company_onboarding", "login", "logout", "setup_admin", "static"}:
+            return None
+        user = current_user()
+        if user is not None and permissions.user_has(user, "company.configure"):
+            return redirect(url_for("company_onboarding"))
+        return None
+
     @app.route("/onboarding", methods=["GET", "POST"])
     def company_onboarding():
         user = current_user()
@@ -101,7 +112,6 @@ def install_onboarding(app, db_path):
                 policy.second_approval_threshold = high_value
                 approvals.save(policy)
 
-                # Preserve safe defaults, but tailor whether bookkeepers may directly approve documents.
                 bookkeeper_permissions = permissions.permissions_for_role("Bookkeeper")
                 if routine_direct:
                     bookkeeper_permissions.add("documents.approve")
@@ -130,10 +140,6 @@ def install_onboarding(app, db_path):
             except (ValueError, InvalidOperation) as exc:
                 flash(str(exc), "error")
 
-        return render_template(
-            "onboarding.html",
-            profile=company.profile,
-            completed=state.completed(),
-        )
+        return render_template("onboarding.html", profile=company.profile, completed=state.completed())
 
     return state
