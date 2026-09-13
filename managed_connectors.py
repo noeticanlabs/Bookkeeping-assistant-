@@ -24,6 +24,7 @@ from live_connectors import (
 
 XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
 QBO_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+JOBBER_TOKEN_URL = "https://api.getjobber.com/api/oauth/token"
 
 
 def _post_form(url: str, fields: dict[str, str], *, basic_user: str | None = None,
@@ -42,8 +43,6 @@ def _post_form(url: str, fields: dict[str, str], *, basic_user: str | None = Non
 
 
 class ManagedXeroConnector:
-    """Xero adapter that refreshes and rotates encrypted OAuth tokens on demand."""
-
     name = "Xero"
 
     def __init__(self, store: ConnectionStore, connection_id: str):
@@ -70,10 +69,8 @@ class ManagedXeroConnector:
                 data["refresh_token"] = token["refresh_token"]
             data["expires_at"] = time.time() + int(token.get("expires_in") or 1800)
             record = self.store.get(self.connection_id)
-            self.store.save(
-                record.provider, record.label, record.capabilities, data,
-                connection_id=record.connection_id, status="connected",
-            )
+            self.store.save(record.provider, record.label, record.capabilities, data,
+                            connection_id=record.connection_id, status="connected")
         return data
 
     def _connector(self) -> XeroConnector:
@@ -93,8 +90,6 @@ class ManagedXeroConnector:
 
 
 class ManagedQuickBooksConnector:
-    """QuickBooks Online adapter with encrypted OAuth refresh-token rotation."""
-
     name = "QuickBooks Online"
 
     def __init__(self, store: ConnectionStore, connection_id: str):
@@ -123,10 +118,8 @@ class ManagedQuickBooksConnector:
             if token.get("x_refresh_token_expires_in") is not None:
                 data["refresh_expires_at"] = time.time() + int(token["x_refresh_token_expires_in"])
             record = self.store.get(self.connection_id)
-            self.store.save(
-                record.provider, record.label, record.capabilities, data,
-                connection_id=record.connection_id, status="connected",
-            )
+            self.store.save(record.provider, record.label, record.capabilities, data,
+                            connection_id=record.connection_id, status="connected")
         return data
 
     def _connector(self) -> QuickBooksOnlineConnector:
@@ -144,6 +137,53 @@ class ManagedQuickBooksConnector:
         return self._connector().pull_deposits()
 
 
+class ManagedJobberConnector:
+    """Jobber adapter that persists rotated refresh tokens before API use."""
+
+    name = "Jobber"
+
+    def __init__(self, store: ConnectionStore, connection_id: str):
+        self.store = store
+        self.connection_id = connection_id
+        self._managed_connection_id = connection_id
+
+    @property
+    def capabilities(self):
+        return frozenset(self.store.get(self.connection_id).capabilities)
+
+    def _settings(self) -> dict[str, Any]:
+        data = self.store.secrets(self.connection_id)
+        expires_at = float(data.get("expires_at") or 0)
+        if data.get("refresh_token") and expires_at <= time.time() + 60:
+            token = _post_form(
+                JOBBER_TOKEN_URL,
+                {
+                    "client_id": str(data["client_id"]),
+                    "client_secret": str(data["client_secret"]),
+                    "grant_type": "refresh_token",
+                    "refresh_token": str(data["refresh_token"]),
+                },
+            )
+            data["access_token"] = token["access_token"]
+            if token.get("refresh_token"):
+                data["refresh_token"] = token["refresh_token"]
+            data["expires_at"] = time.time() + int(token.get("expires_in") or 3600)
+            record = self.store.get(self.connection_id)
+            self.store.save(record.provider, record.label, record.capabilities, data,
+                            connection_id=record.connection_id, status="connected")
+        return data
+
+    def _connector(self) -> JobberConnector:
+        data = self._settings()
+        return JobberConnector(
+            access_token=str(data["access_token"]),
+            graphql_version=str(data.get("graphql_version") or "2025-04-16"),
+        )
+
+    def pull_work_orders(self):
+        return self._connector().pull_work_orders()
+
+
 def build_connector(store: ConnectionStore, connection_id: str):
     record = store.get(connection_id)
     data = store.secrets(connection_id)
@@ -156,17 +196,21 @@ def build_connector(store: ConnectionStore, connection_id: str):
     elif provider == "stripe":
         connector = StripeConnector(secret_key=str(data["secret_key"]))
     elif provider == "jobber":
-        connector = JobberConnector(
-            access_token=str(data["access_token"]),
-            graphql_version=str(data.get("graphql_version") or "2025-04-16"),
-        )
+        if record.status == "connected" and data.get("access_token") and data.get("refresh_token"):
+            connector = ManagedJobberConnector(store, connection_id)
+        elif data.get("access_token"):
+            connector = JobberConnector(
+                access_token=str(data["access_token"]),
+                graphql_version=str(data.get("graphql_version") or "2025-04-16"),
+            )
+        else:
+            return None
     elif provider == "housecall_pro":
         connector = HousecallProConnector(api_key=str(data["api_key"]))
     elif provider == "quickbooks":
         if record.status == "connected" and data.get("access_token") and data.get("realm_id"):
             connector = ManagedQuickBooksConnector(store, connection_id)
         elif data.get("access_token") and data.get("realm_id"):
-            # Backward-compatible manually configured QBO connection.
             connector = QuickBooksOnlineConnector(
                 realm_id=str(data["realm_id"]),
                 access_token=str(data["access_token"]),
