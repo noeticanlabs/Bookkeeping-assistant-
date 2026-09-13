@@ -269,3 +269,205 @@ class QuickBooksOnlineConnector:
                 reference=str(reference).strip() if reference else None,
             ))
         return result
+
+
+@dataclass
+class XeroConnector:
+    """Xero Accounting API adapter.
+
+    Payments are imported as financial evidence. Invoice export is optional and
+    requires an explicit internal-customer -> Xero ContactID mapping so this
+    adapter never guesses a contact identity.
+    """
+
+    tenant_id: str
+    access_token: str
+    contact_ids: dict[str, str] | None = None
+    revenue_account_code: str | None = None
+    name: str = "Xero"
+    capabilities: frozenset[str] = frozenset({PAYMENTS_READ, "invoices.write"})
+    base_url: str = "https://api.xero.com/api.xro/2.0"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Xero-tenant-id": self.tenant_id,
+            "Accept": "application/json",
+        }
+
+    def pull_payments(self) -> list[Payment]:
+        where = urllib.parse.quote('PaymentType=="ACCRECPAYMENT" AND Status=="AUTHORISED"', safe="")
+        payload = _json_request(f"{self.base_url}/Payments?where={where}", headers=self._headers())
+        result: list[Payment] = []
+        for row in payload.get("Payments") or []:
+            payment_id = str(row.get("PaymentID") or "").strip()
+            if not payment_id:
+                continue
+            invoice = row.get("Invoice") or {}
+            reference = row.get("Reference") or invoice.get("InvoiceNumber")
+            result.append(Payment(
+                id=f"XERO-PAY:{payment_id}",
+                amount=_money(row.get("Amount")),
+                reference=str(reference).strip() if reference else None,
+            ))
+        return result
+
+    def push_invoice(self, invoice) -> str:
+        contacts = self.contact_ids or {}
+        contact_id = contacts.get(invoice.customer)
+        if not contact_id:
+            raise ConnectorError(f"No Xero ContactID mapping for customer: {invoice.customer}")
+        if not self.revenue_account_code:
+            raise ConnectorError("Xero revenue account code is required for invoice export")
+        payload = _json_request(
+            f"{self.base_url}/Invoices",
+            method="POST",
+            headers=self._headers(),
+            body={
+                "Invoices": [{
+                    "Type": "ACCREC",
+                    "Contact": {"ContactID": contact_id},
+                    "InvoiceNumber": invoice.id,
+                    "Reference": invoice.work_order_id,
+                    "Status": "AUTHORISED",
+                    "LineItems": [{
+                        "Description": f"Services for {invoice.work_order_id}",
+                        "Quantity": 1,
+                        "UnitAmount": float(invoice.total),
+                        "AccountCode": self.revenue_account_code,
+                    }],
+                }]
+            },
+        )
+        rows = payload.get("Invoices") or []
+        if not rows or not rows[0].get("InvoiceID"):
+            raise ConnectorError("Xero did not return an InvoiceID")
+        return str(rows[0]["InvoiceID"])
+
+
+@dataclass
+class StripeConnector:
+    """Stripe payment and payout evidence adapter.
+
+    Successful PaymentIntents become Payment evidence. Paid payouts become bank
+    deposit evidence. Neither is auto-matched to internal invoices/payments.
+    """
+
+    secret_key: str
+    name: str = "Stripe"
+    capabilities: frozenset[str] = frozenset({PAYMENTS_READ, DEPOSITS_READ})
+    base_url: str = "https://api.stripe.com/v1"
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        query = urllib.parse.urlencode(params or {})
+        url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
+        if query:
+            url += "?" + query
+        token = urllib.parse.quote(self.secret_key + ":")
+        import base64
+        auth = base64.b64encode((self.secret_key + ":").encode("utf-8")).decode("ascii")
+        return _json_request(url, headers={"Authorization": f"Basic {auth}"})
+
+    def pull_payments(self) -> list[Payment]:
+        result: list[Payment] = []
+        starting_after = None
+        while True:
+            params: dict[str, Any] = {"limit": 100}
+            if starting_after:
+                params["starting_after"] = starting_after
+            payload = self._get("payment_intents", params)
+            rows = payload.get("data") or []
+            for row in rows:
+                if row.get("status") != "succeeded":
+                    continue
+                pid = str(row.get("id") or "").strip()
+                if not pid:
+                    continue
+                metadata = row.get("metadata") or {}
+                reference = metadata.get("invoice_id") or metadata.get("invoice") or row.get("description")
+                amount_minor = row.get("amount_received") or row.get("amount") or 0
+                result.append(Payment(
+                    id=f"STRIPE-PAY:{pid}",
+                    amount=Decimal(str(amount_minor)) / Decimal("100"),
+                    reference=str(reference).strip() if reference else None,
+                ))
+            if not payload.get("has_more") or not rows:
+                break
+            starting_after = rows[-1].get("id")
+            if not starting_after:
+                break
+        return result
+
+    def pull_deposits(self) -> list[BankDeposit]:
+        result: list[BankDeposit] = []
+        starting_after = None
+        while True:
+            params: dict[str, Any] = {"limit": 100, "status": "paid"}
+            if starting_after:
+                params["starting_after"] = starting_after
+            payload = self._get("payouts", params)
+            rows = payload.get("data") or []
+            for row in rows:
+                payout_id = str(row.get("id") or "").strip()
+                if not payout_id:
+                    continue
+                result.append(BankDeposit(
+                    id=f"STRIPE-DEP:{payout_id}",
+                    amount=Decimal(str(row.get("amount") or 0)) / Decimal("100"),
+                    reference=str(row.get("description") or payout_id),
+                ))
+            if not payload.get("has_more") or not rows:
+                break
+            starting_after = rows[-1].get("id")
+            if not starting_after:
+                break
+        return result
+
+
+@dataclass
+class ServiceTitanConnector:
+    """ServiceTitan operational job/work-order source.
+
+    ServiceTitan third-party API access is customer/app controlled. The approved
+    jobs endpoint and response mapping are therefore configuration inputs rather
+    than guessed here. This adapter contributes work-order facts only.
+    """
+
+    jobs_url: str
+    access_token: str
+    app_key: str
+    field_map: dict[str, str]
+    items_key: str = "data"
+    name: str = "ServiceTitan"
+    capabilities: frozenset[str] = frozenset({WORK_ORDERS_READ})
+
+    def _value(self, row: dict[str, Any], logical: str, default: Any = None) -> Any:
+        return row.get(self.field_map.get(logical, logical), default)
+
+    def pull_work_orders(self) -> list[WorkOrder]:
+        payload = _json_request(
+            self.jobs_url,
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "ST-App-Key": self.app_key,
+                "Accept": "application/json",
+            },
+        )
+        rows = payload.get(self.items_key) or []
+        if not isinstance(rows, list):
+            raise ConnectorError("ServiceTitan jobs response is not a list")
+        result: list[WorkOrder] = []
+        for row in rows:
+            external_id = str(self._value(row, "id", "")).strip()
+            if not external_id:
+                continue
+            customer = str(self._value(row, "customer", self._value(row, "customerName", "Unknown"))).strip() or "Unknown"
+            description = str(self._value(row, "description", self._value(row, "summary", "Job"))).strip() or "Job"
+            result.append(WorkOrder(
+                id=f"ST:{external_id}",
+                customer=customer,
+                description=description,
+                status=_normalize_status(self._value(row, "status", "open")),
+                quoted_total=None,
+            ))
+        return result
