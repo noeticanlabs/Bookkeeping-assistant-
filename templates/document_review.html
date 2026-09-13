@@ -27,6 +27,10 @@
     </p>
     <form method="post" action="/documents/approve">
       <input type="hidden" name="evidence_id" value="{{ evidence.evidence_id }}">
+      <label>Approved by
+        <input name="actor" value="user" required>
+        <small>This name is written to the append-only decision audit trail.</small>
+      </label>
       <label>Record ID
         <input name="record_id" value="{{ proposal.document_id or '' }}" placeholder="BILL-1042 or COST-1042" required>
       </label>
