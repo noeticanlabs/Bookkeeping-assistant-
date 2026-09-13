@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from connectors import DOCUMENTS_EXTRACT
+
 
 EXTRACTION_SCHEMA = {
     "type": "object",
@@ -28,6 +30,9 @@ ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 
 class OpenAIDocumentConnector:
     """Extract a minimal bookkeeping proposal from an uploaded document."""
+
+    name = "OpenAI Documents"
+    capabilities = frozenset({DOCUMENTS_EXTRACT})
 
     def __init__(
         self,
@@ -78,13 +83,9 @@ class OpenAIDocumentConnector:
                             {
                                 "type": "input_text",
                                 "text": (
-                                    "Read this receipt or vendor invoice for bookkeeping review. "
-                                    "Extract only what is supported by the document. Do not invent missing values. "
-                                    "vendor is the merchant/vendor name. amount is the final total due/paid. "
-                                    "reference should include useful PO, job, work-order, customer, or invoice references. "
-                                    "document_id is the receipt/invoice number when present. work_order_id is an explicit "
-                                    "work-order/job ID only when actually shown. record_type should be vendor_bill when "
-                                    "the document represents an amount owed to a vendor, otherwise cost for a paid receipt."
+                                    "Read this bookkeeping source document. Extract only the fields in the schema. "
+                                    "Do not infer a work order unless an identifier is actually present. "
+                                    "Use vendor_bill for an invoice/bill requesting payment; use cost for a receipt or already-paid purchase."
                                 ),
                             },
                             {"type": "input_file", "file_id": uploaded.id},
@@ -100,27 +101,20 @@ class OpenAIDocumentConnector:
                     }
                 },
             )
-
-            raw = response.output_text
-            if not raw:
-                raise ValueError("Document extractor returned no result")
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError("Document extractor returned malformed structured data") from exc
+            text = getattr(response, "output_text", None)
+            if not text:
+                raise ValueError("Document extraction returned no structured output")
+            data = json.loads(text)
             if not isinstance(data, dict):
-                raise ValueError("Document extractor returned an invalid result")
+                raise ValueError("Document extraction returned invalid structured output")
             return data
-        except ValueError:
+        except (ValueError, json.JSONDecodeError):
             raise
-        except AttributeError as exc:
-            raise ValueError("Document extractor returned malformed structured data") from exc
         except Exception as exc:
-            raise ValueError("Document extraction service failed") from exc
+            raise RuntimeError("Document extraction service failed") from exc
         finally:
             if uploaded is not None:
                 try:
                     self.client.files.delete(uploaded.id)
                 except Exception:
-                    # Cleanup failure must never turn a successful extraction into bookkeeping failure.
                     pass
