@@ -50,9 +50,7 @@
       <strong>Field-service connection</strong>
       {% if field_service_connected %}
         <form method="post" action="/sync/field-service"><button>Sync work orders</button></form>
-      {% else %}
-        <p><small>No live field-service connector configured.</small></p>
-      {% endif %}
+      {% else %}<p><small>No live field-service connector configured.</small></p>{% endif %}
     </div>
   </div>
 
@@ -60,28 +58,17 @@
   <div class="grid">
     <div class="card">
       <strong>Payment CSV</strong>
-      <p><small>Required: id, amount. Optional: reference. Put an invoice ID in reference for an exact suggestion.</small></p>
-      <form method="post" action="/imports/payments/csv" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".csv,text/csv" required>
-        <button>Import payments</button>
-      </form>
+      <p><small>Required: id, amount. Optional: reference.</small></p>
+      <form method="post" action="/imports/payments/csv" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,text/csv" required><button>Import payments</button></form>
     </div>
     <div class="card">
       <strong>Deposit CSV</strong>
-      <p><small>Required: id, amount. Optional: reference, processor_fee. Put a payment ID in reference for an exact suggestion.</small></p>
-      <form method="post" action="/imports/deposits/csv" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".csv,text/csv" required>
-        <button>Import deposits</button>
-      </form>
+      <p><small>Required: id, amount. Optional: reference, processor_fee.</small></p>
+      <form method="post" action="/imports/deposits/csv" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,text/csv" required><button>Import deposits</button></form>
     </div>
     <div class="card">
       <strong>Accounting connection</strong>
-      {% if accounting_connected %}
-        <p><small>Imports payments and deposits as unmatched evidence.</small></p>
-        <form method="post" action="/sync/accounting"><button>Sync accounting</button></form>
-      {% else %}
-        <p><small>No live accounting connector configured yet.</small></p>
-      {% endif %}
+      {% if accounting_connected %}<form method="post" action="/sync/accounting"><button>Sync accounting</button></form>{% else %}<p><small>No live accounting connector configured yet.</small></p>{% endif %}
     </div>
   </div>
 
@@ -89,13 +76,8 @@
   <div class="card">
     {% if document_connected %}
       <p><small>The document reader extracts a proposal only. The original upload is fingerprinted and preserved before review.</small></p>
-      <form method="post" action="/documents/extract" enctype="multipart/form-data">
-        <input type="file" name="file" accept="image/*,.pdf" required>
-        <button>Read document</button>
-      </form>
-    {% else %}
-      <p><small>No document-reading connector configured yet.</small></p>
-    {% endif %}
+      <form method="post" action="/documents/extract" enctype="multipart/form-data"><input type="file" name="file" accept="image/*,.pdf" required><button>Read document</button></form>
+    {% else %}<p><small>No document-reading connector configured yet.</small></p>{% endif %}
   </div>
 
   {% if source_documents %}
@@ -113,14 +95,32 @@
   </table>
   {% endif %}
 
+  {% if audit_events %}
+  <h2>Decision audit trail</h2>
+  <table>
+    <tr><th>When</th><th>Actor</th><th>Evidence</th><th>Event</th><th>Decision</th></tr>
+    {% for event in audit_events|reverse %}
+      <tr>
+        <td><small>{{ event.created_at }}</small></td>
+        <td>{{ event.actor }}</td>
+        <td>{{ event.evidence_id }}</td>
+        <td>{{ event.event_type }}</td>
+        <td>
+          {% if event.event_type == 'document.approved' %}
+            {{ event.payload.result.record_type }} {{ event.payload.result.record_id }}
+            {% if event.payload.changes %}<br><small>{{ event.payload.changes|length }} reviewed field change(s)</small>{% else %}<br><small>Approved as proposed</small>{% endif %}
+          {% else %}
+            <small>Proposal captured</small>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
   <h2>Add completed work order manually</h2>
   <form method="post" action="/work-orders">
-    <input name="id" placeholder="WO-1002" required>
-    <input name="customer" placeholder="Customer" required>
-    <input name="description" placeholder="Work performed" required>
-    <input name="quoted_total" placeholder="Quoted total">
-    <input type="hidden" name="status" value="complete">
-    <button>Add job</button>
+    <input name="id" placeholder="WO-1002" required><input name="customer" placeholder="Customer" required><input name="description" placeholder="Work performed" required><input name="quoted_total" placeholder="Quoted total"><input type="hidden" name="status" value="complete"><button>Add job</button>
   </form>
   <form method="post" action="/demo"><button>Load demo job</button></form>
 
@@ -130,20 +130,9 @@
     {% for wo in book.work_orders.values() %}
       {% set inv = book.invoice_for(wo.id) %}
       <tr>
-        <td>{{ wo.id }}</td>
-        <td>{{ wo.customer }}<br><small>{{ wo.description }}</small></td>
-        <td>${{ book.job_cost(wo.id) }}</td>
+        <td>{{ wo.id }}</td><td>{{ wo.customer }}<br><small>{{ wo.description }}</small></td><td>${{ book.job_cost(wo.id) }}</td>
         <td>{% if inv %}{{ inv.id }} — ${{ inv.total }} — {{ inv.status }} — {{ inv.payment_status }}{% else %}None{% endif %}</td>
-        <td>
-          {% if not inv %}
-            <form method="post" action="/work-orders/{{ wo.id }}/invoice">
-              {% if wo.quoted_total is none %}<input name="total" placeholder="Invoice total" required>{% endif %}
-              <button>Prepare invoice</button>
-            </form>
-          {% elif inv.status == 'draft' %}
-            <form method="post" action="/invoices/{{ inv.id }}/issue"><button>Issue invoice</button></form>
-          {% else %}<span class="ready">Issued</span>{% endif %}
-        </td>
+        <td>{% if not inv %}<form method="post" action="/work-orders/{{ wo.id }}/invoice">{% if wo.quoted_total is none %}<input name="total" placeholder="Invoice total" required>{% endif %}<button>Prepare invoice</button></form>{% elif inv.status == 'draft' %}<form method="post" action="/invoices/{{ inv.id }}/issue"><button>Issue invoice</button></form>{% else %}<span class="ready">Issued</span>{% endif %}</td>
       </tr>
     {% endfor %}
   </table>
@@ -151,67 +140,27 @@
   <h2>Imported / unmatched payments</h2>
   <table>
     <tr><th>Payment</th><th>Amount</th><th>Reference</th><th>Invoice</th><th>Action</th></tr>
-    {% for p in book.payments.values() %}
-      {% set suggestion = book.suggest_payment_match(p.id) if not p.invoice_id else none %}
-      <tr>
-        <td>{{ p.id }}</td><td>${{ p.amount }}</td><td>{{ p.reference or '—' }}</td><td>{{ p.invoice_id or '—' }}</td>
-        <td>
-          {% if not p.invoice_id and suggestion %}
-            Suggested: {{ suggestion }}
-            <form method="post" action="/payments/{{ p.id }}/accept-suggestion"><button>Accept match</button></form>
-          {% elif not p.invoice_id %}Needs review{% else %}Matched{% endif %}
-        </td>
-      </tr>
+    {% for p in book.payments.values() %}{% set suggestion = book.suggest_payment_match(p.id) if not p.invoice_id else none %}
+      <tr><td>{{ p.id }}</td><td>${{ p.amount }}</td><td>{{ p.reference or '—' }}</td><td>{{ p.invoice_id or '—' }}</td><td>{% if not p.invoice_id and suggestion %}Suggested: {{ suggestion }}<form method="post" action="/payments/{{ p.id }}/accept-suggestion"><button>Accept match</button></form>{% elif not p.invoice_id %}Needs review{% else %}Matched{% endif %}</td></tr>
     {% endfor %}
   </table>
 
   <h2>Record customer payment manually</h2>
-  <form method="post" action="/payments">
-    <input name="id" placeholder="PAY-1001" required>
-    <select name="invoice_id" required>
-      <option value="">Invoice…</option>
-      {% for inv in book.invoices.values() if inv.status != 'draft' and inv.payment_status != 'paid' %}
-        <option value="{{ inv.id }}">{{ inv.id }} — ${{ inv.balance_due }} due</option>
-      {% endfor %}
-    </select>
-    <input name="amount" placeholder="Amount" required>
-    <button>Record payment</button>
-  </form>
+  <form method="post" action="/payments"><input name="id" placeholder="PAY-1001" required><select name="invoice_id" required><option value="">Invoice…</option>{% for inv in book.invoices.values() if inv.status != 'draft' and inv.payment_status != 'paid' %}<option value="{{ inv.id }}">{{ inv.id }} — ${{ inv.balance_due }} due</option>{% endfor %}</select><input name="amount" placeholder="Amount" required><button>Record payment</button></form>
 
   <h2>Bank reconciliation</h2>
   <table>
     <tr><th>Deposit</th><th>Amount</th><th>Reference / Payment</th><th>Fee</th><th>Status / Action</th></tr>
-    {% for dep in book.deposits.values() %}
-      {% set suggestion = book.suggest_deposit_match(dep.id) if not dep.payment_id else none %}
-      <tr>
-        <td>{{ dep.id }}</td><td>${{ dep.amount }}</td>
-        <td>{{ dep.reference or dep.payment_id or '—' }}</td><td>${{ dep.processor_fee }}</td>
-        <td>
-          {% if not dep.payment_id and suggestion %}
-            Suggested: {{ suggestion }}
-            <form method="post" action="/deposits/{{ dep.id }}/accept-suggestion"><button>Accept match</button></form>
-          {% else %}{{ book.deposit_status(dep.id) }}{% endif %}
-        </td>
-      </tr>
+    {% for dep in book.deposits.values() %}{% set suggestion = book.suggest_deposit_match(dep.id) if not dep.payment_id else none %}
+      <tr><td>{{ dep.id }}</td><td>${{ dep.amount }}</td><td>{{ dep.reference or dep.payment_id or '—' }}</td><td>${{ dep.processor_fee }}</td><td>{% if not dep.payment_id and suggestion %}Suggested: {{ suggestion }}<form method="post" action="/deposits/{{ dep.id }}/accept-suggestion"><button>Accept match</button></form>{% else %}{{ book.deposit_status(dep.id) }}{% endif %}</td></tr>
     {% endfor %}
   </table>
 
   <h2>Record bank deposit manually</h2>
-  <form method="post" action="/deposits">
-    <input name="id" placeholder="DEP-1001" required>
-    <select name="payment_id" required>
-      <option value="">Payment…</option>
-      {% for p in book.payments.values() %}<option value="{{ p.id }}">{{ p.id }} — ${{ p.amount }}</option>{% endfor %}
-    </select>
-    <input name="amount" placeholder="Deposit amount" required>
-    <input name="processor_fee" placeholder="Processor fee" value="0">
-    <button>Reconcile deposit</button>
-  </form>
+  <form method="post" action="/deposits"><input name="id" placeholder="DEP-1001" required><select name="payment_id" required><option value="">Payment…</option>{% for p in book.payments.values() %}<option value="{{ p.id }}">{{ p.id }} — ${{ p.amount }}</option>{% endfor %}</select><input name="amount" placeholder="Deposit amount" required><input name="processor_fee" placeholder="Processor fee" value="0"><button>Reconcile deposit</button></form>
 
   <h2>Needs attention</h2>
-  {% if summary.needs_attention %}
-    <ul>{% for item in summary.needs_attention %}<li><strong>{{ item.kind }}</strong>: {{ item.reference_id }} — {{ item.message }}</li>{% endfor %}</ul>
-  {% else %}<p>No current exceptions.</p>{% endif %}
+  {% if summary.needs_attention %}<ul>{% for item in summary.needs_attention %}<li><strong>{{ item.kind }}</strong>: {{ item.reference_id }} — {{ item.message }}</li>{% endfor %}</ul>{% else %}<p>No current exceptions.</p>{% endif %}
 
   <p><small>Imports and document extraction create evidence/proposals. Matching and posting remain explicit bookkeeping actions.</small></p>
 </body>
