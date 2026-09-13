@@ -7,6 +7,7 @@ from copy import deepcopy
 from flask import flash, g, redirect, render_template, url_for
 
 from imports import import_deposits, import_payments, import_work_orders
+from verifier_registry import blocking_invoice_failures
 
 
 def install_multi_connector_routes(app) -> None:
@@ -135,6 +136,17 @@ def install_multi_connector_routes(app) -> None:
             invoice = book.invoices[invoice_id]
             if invoice.status != "draft":
                 raise ValueError("Invoice is already issued")
+
+            registry = app.config.get("VERIFIER_REGISTRY")
+            if registry is not None:
+                failures = blocking_invoice_failures(book, invoice.id, registry)
+                if failures:
+                    verifier_ids = ", ".join(sorted({result.verifier_id for result in failures}))
+                    raise ValueError(
+                        f"Invoice blocked by deterministic verification failure(s): {verifier_ids}. "
+                        "Review /verifications before issuing."
+                    )
+
             sinks = hub.invoice_sinks()
             if not sinks:
                 old_status = invoice.status
