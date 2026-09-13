@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import flash, redirect, url_for
+from flask import flash, redirect, render_template, url_for
 
 from imports import import_deposits, import_payments, import_work_orders
 
@@ -21,6 +21,18 @@ def install_multi_connector_routes(app) -> None:
         if result.errors:
             flash(f"{source}: " + "; ".join(result.errors), "error")
         flash(f"{source} {label}: added {result.added}; skipped {result.skipped}", "success")
+
+    @app.get("/settings/connections")
+    def connection_summary():
+        rows = [
+            {
+                "name": connector_name(connector),
+                "capabilities": sorted(getattr(connector, "capabilities", frozenset())),
+                "class_name": connector.__class__.__name__,
+            }
+            for connector in hub.connectors
+        ]
+        return render_template("connections.html", connectors=rows)
 
     def sync_field_service_multi():
         sources = hub.work_order_sources()
