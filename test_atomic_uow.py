@@ -58,7 +58,6 @@ def test_correction_finalization_rolls_back_approval_and_domain_state_on_failure
         for e in app.config["AUDIT_LOG"].events()
     )
 
-    # The same approver can retry because the failed approval itself rolled back.
     monkeypatch.setattr(atomic_uow, "_persist_book", original_persist)
     count, required, finalized = uow.approve(req.request_id, "USR-A", "Owner [owner] (Owner)")
     assert (count, required, finalized) == (1, 1, True)
@@ -108,5 +107,79 @@ def test_document_finalization_rolls_back_provenance_and_record_on_failure(tmp_p
     assert provenance.documents[doc.evidence_id].approved_record_id is None
     assert not any(
         e.event_type == "document.approved" and e.evidence_id == doc.evidence_id
+        for e in app.config["AUDIT_LOG"].events()
+    )
+
+
+def test_direct_document_post_rolls_back_everything_on_failure(tmp_path, monkeypatch):
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"))
+    book = app.config["BOOKKEEPER"]
+    provenance = app.config["PROVENANCE"]
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair", "complete", Decimal("500")))
+    app.config["SAVE_BOOKKEEPER"]()
+
+    source = tmp_path / "direct.pdf"
+    source.write_bytes(b"direct receipt")
+    doc = provenance.capture(source, "direct.pdf")
+    payload = {
+        "record_id": "C-DIRECT-1", "vendor": "Vendor", "amount": "25",
+        "reference": "WO-1", "work_order_id": "WO-1", "record_type": "cost",
+        "treatment": "ask", "linked_cost_id": None,
+    }
+    uow = AtomicApprovalUnitOfWork(
+        app.config["BOOKKEEPER_DATA_PATH"], book, provenance, app.config["CORRECTIONS"]
+    )
+
+    def fail_after_domain_mutation(conn, current_book):
+        raise RuntimeError("direct persistence failure")
+
+    monkeypatch.setattr(atomic_uow, "_persist_book", fail_after_domain_mutation)
+    with pytest.raises(RuntimeError, match="direct persistence failure"):
+        uow.finalize_direct_document(payload, doc.evidence_id, "Book Keeper")
+
+    assert "C-DIRECT-1" not in book.costs
+    assert provenance.documents[doc.evidence_id].approved_record_id is None
+    assert not any(
+        e.event_type == "document.approved" and e.evidence_id == doc.evidence_id
+        for e in app.config["AUDIT_LOG"].events()
+    )
+
+
+def test_direct_correction_rolls_back_financial_and_correction_state_on_failure(tmp_path, monkeypatch):
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"))
+    book = app.config["BOOKKEEPER"]
+    corrections = app.config["CORRECTIONS"]
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair", "complete", Decimal("500")))
+    book.add_cost(Cost("C-1", "Vendor", Decimal("100"), "materials", "WO-1"))
+    app.config["SAVE_BOOKKEEPER"]()
+
+    correction = corrections.propose(
+        book,
+        original_cost_id="C-1",
+        replacement_cost_id="C-1-R1",
+        vendor="Vendor",
+        amount=Decimal("80"),
+        work_order_id="WO-1",
+        reference="corrected",
+        reason="Receipt corrected",
+        proposed_by="Book Keeper",
+    )
+    uow = AtomicApprovalUnitOfWork(
+        app.config["BOOKKEEPER_DATA_PATH"], book, app.config["PROVENANCE"], corrections
+    )
+
+    def fail_after_domain_mutation(conn, current_book):
+        raise RuntimeError("direct correction persistence failure")
+
+    monkeypatch.setattr(atomic_uow, "_persist_book", fail_after_domain_mutation)
+    with pytest.raises(RuntimeError, match="direct correction persistence failure"):
+        uow.finalize_direct_correction(correction.correction_id, "Book Keeper")
+
+    assert book.job_cost("WO-1") == Decimal("100")
+    assert book.costs["C-1"].superseded_by is None
+    assert "C-1-R1" not in book.costs
+    assert corrections.corrections[correction.correction_id].status == "pending"
+    assert not any(
+        e.event_type == "cost.correction.finalized"
         for e in app.config["AUDIT_LOG"].events()
     )
