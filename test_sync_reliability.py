@@ -1,7 +1,7 @@
 from decimal import Decimal
 
-from app import Invoice, WorkOrder
-from connectors import ConnectorHub, INVOICES_WRITE
+from app import Invoice, Payment, WorkOrder
+from connectors import ConnectorHub, INVOICES_WRITE, PAYMENTS_READ
 from readiness import build_readiness
 from secure_web_app import create_secure_app
 from sync_reliability import SyncReliabilityStore
@@ -100,3 +100,29 @@ def test_uncertain_outbound_delivery_blocks_readiness(tmp_path):
     blocker = next(item for item in items if item.title == "Uncertain outbound deliveries")
     assert blocker.blocking is True
     assert blocker.status == "missing"
+
+
+class PaymentSource:
+    name = "Payment Source"
+    capabilities = frozenset({PAYMENTS_READ})
+
+    def pull_payments(self):
+        return [Payment("PAY-ROLLBACK", Decimal("25"), reference="INV-X")]
+
+
+def test_pull_sync_restores_memory_if_persistence_fails(tmp_path):
+    hub = ConnectorHub()
+    hub.register(PaymentSource())
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=hub)
+    app.config.update(TESTING=True)
+    app.config["SAVE_BOOKKEEPER"] = lambda: (_ for _ in ()).throw(RuntimeError("disk write failed"))
+    book = app.config["BOOKKEEPER"]
+
+    with app.test_request_context("/sync-accounting", method="POST"):
+        response = app.view_functions["sync_accounting"]()
+        assert response.status_code in (302, 303)
+
+    assert "PAY-ROLLBACK" not in book.payments
+    latest = app.config["SYNC_RELIABILITY"].list_runs()[0]
+    assert latest.status == "failed"
+    assert "disk write failed" in latest.error
