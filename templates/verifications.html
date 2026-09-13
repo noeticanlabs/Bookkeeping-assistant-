@@ -29,10 +29,10 @@
   <p>These checks evaluate bookkeeping identities and relationships. A PASS is evidence that a rule holds; it does not grant posting or payment authority.</p>
 
   <section class="grid">
-    <div class="card"><small>Pass</small><div class="metric">{{ summary.pass }}</div></div>
-    <div class="card"><small>Fail</small><div class="metric">{{ summary.fail }}</div></div>
-    <div class="card"><small>Unknown</small><div class="metric">{{ summary.unknown }}</div></div>
-    <div class="card"><small>Review required</small><div class="metric">{{ summary.review_required }}</div></div>
+    <div class="card"><small>Pass</small><div class="metric">{{ summary['pass'] }}</div></div>
+    <div class="card"><small>Fail</small><div class="metric">{{ summary['fail'] }}</div></div>
+    <div class="card"><small>Unknown</small><div class="metric">{{ summary['unknown'] }}</div></div>
+    <div class="card"><small>Review required</small><div class="metric">{{ summary['review_required'] }}</div></div>
   </section>
 
   <table>
