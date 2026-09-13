@@ -41,6 +41,8 @@ class VendorBill:
     due_date: str | None = None
     amount_paid: Money = Decimal("0")
     work_order_id: str | None = None
+    treatment: str | None = None
+    linked_cost_id: str | None = None
 
     @property
     def balance_due(self) -> Money:
@@ -115,12 +117,17 @@ class InvoiceReview:
 
 @dataclass
 class Bookkeeper:
+    vendor_bill_mode: str = "ask"
     work_orders: dict[str, WorkOrder] = field(default_factory=dict)
     costs: dict[str, Cost] = field(default_factory=dict)
     vendor_bills: dict[str, VendorBill] = field(default_factory=dict)
     invoices: dict[str, Invoice] = field(default_factory=dict)
     payments: dict[str, Payment] = field(default_factory=dict)
     deposits: dict[str, BankDeposit] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.vendor_bill_mode not in {"ask", "create_cost", "support_cost"}:
+            raise ValueError("Invalid vendor bill mode")
 
     def add_work_order(self, work_order: WorkOrder) -> None:
         if work_order.id in self.work_orders:
@@ -144,6 +151,41 @@ class Bookkeeper:
         if bill.work_order_id and bill.work_order_id not in self.work_orders:
             raise ValueError("Unknown work order")
         self.vendor_bills[bill.id] = bill
+
+    def treat_vendor_bill(
+        self,
+        bill_id: str,
+        treatment: str | None = None,
+        linked_cost_id: str | None = None,
+    ) -> VendorBill:
+        bill = self.vendor_bills[bill_id]
+        chosen = treatment or self.vendor_bill_mode
+        if chosen == "ask":
+            raise ValueError("Vendor bill treatment must be chosen")
+        if chosen not in {"create_cost", "support_cost", "overhead"}:
+            raise ValueError("Invalid vendor bill treatment")
+        if bill.treatment is not None:
+            raise ValueError("Vendor bill treatment is already set")
+
+        if chosen == "create_cost":
+            if not bill.work_order_id:
+                raise ValueError("Job cost treatment requires a work order")
+            cost_id = f"BILL-COST-{bill.id}"
+            self.add_cost(Cost(cost_id, bill.vendor, bill.amount, "vendor_bill", bill.work_order_id, bill.id))
+            bill.linked_cost_id = cost_id
+
+        elif chosen == "support_cost":
+            if not linked_cost_id or linked_cost_id not in self.costs:
+                raise ValueError("Support treatment requires an existing cost")
+            cost = self.costs[linked_cost_id]
+            if bill.work_order_id and cost.work_order_id and bill.work_order_id != cost.work_order_id:
+                raise ValueError("Vendor bill and cost reference different work orders")
+            if not bill.work_order_id:
+                bill.work_order_id = cost.work_order_id
+            bill.linked_cost_id = linked_cost_id
+
+        bill.treatment = chosen
+        return bill
 
     def pay_vendor_bill(self, bill_id: str, amount: Money) -> VendorBill:
         if amount <= 0:
@@ -349,6 +391,9 @@ class Bookkeeper:
                 suggestion = self.suggest_cost_match(cost.id)
                 message = f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead"
                 issues.append(ReviewItem("unassigned_cost", message, cost.id))
+        for bill in self.vendor_bills.values():
+            if bill.treatment is None:
+                issues.append(ReviewItem("vendor_bill_treatment", "Vendor bill needs cost treatment", bill.id))
         for payment in self.payments.values():
             if payment.invoice_id is None or payment.invoice_id not in self.invoices:
                 suggestion = self.suggest_payment_match(payment.id) if payment.invoice_id is None else None
@@ -372,6 +417,7 @@ class Bookkeeper:
         return {
             "completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"),
             "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"),
+            "vendor_bills_needing_treatment": sum(1 for i in issues if i.kind == "vendor_bill_treatment"),
             "unmatched_payments": sum(1 for i in issues if i.kind == "unmatched_payment"),
             "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}),
             "open_invoice_count": len(unpaid),
