@@ -104,11 +104,14 @@ class OpenAIDocumentConnector:
             text = getattr(response, "output_text", None)
             if not text:
                 raise ValueError("Document extraction returned no structured output")
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Document extraction returned malformed structured output") from exc
             if not isinstance(data, dict):
                 raise ValueError("Document extraction returned invalid structured output")
             return data
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             raise
         except Exception as exc:
             raise RuntimeError("Document extraction service failed") from exc
