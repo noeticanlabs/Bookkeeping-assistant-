@@ -15,6 +15,7 @@ from readiness import install_readiness
 from redirect_safety import install_redirect_safety
 from sod_web import install_separation_of_duties
 from sqlite_store import save_bookkeeper
+from sync_reliability import SyncReliabilityStore
 from web_app import create_app
 
 
@@ -33,6 +34,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     _configure_session_secret(app)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
+    app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
 
     cipher = CredentialCipher.from_environment()
     connection_store = ConnectionStore(db_path, cipher) if cipher is not None else None
