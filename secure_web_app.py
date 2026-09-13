@@ -4,6 +4,7 @@ import os
 import secrets
 
 from auth_web import install_auth
+from business_intelligence_web import install_business_intelligence
 from connection_health import install_connection_health
 from connection_manager import ConnectionStore, CredentialCipher
 from connection_manager_web import install_connection_manager
@@ -61,6 +62,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_connection_health(app, connection_store)
     install_onboarding(app, db_path)
     install_readiness(app)
+    install_business_intelligence(app, db_path)
     app.config["AUTO_SYNC_THREAD"] = start_scheduler_thread(app)
     app.config["AUTO_SYNC_ENABLED"] = app.config["AUTO_SYNC_THREAD"] is not None
     return app
