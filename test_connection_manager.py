@@ -4,9 +4,14 @@ import pytest
 from cryptography.fernet import Fernet
 
 from connection_manager import ConnectionStore, CredentialCipher
-from connectors import ConnectorHub, DEPOSITS_READ, PAYMENTS_READ
+from connectors import ConnectorHub, DEPOSITS_READ, PAYMENTS_READ, WORK_ORDERS_READ
 import managed_connectors
-from managed_connectors import ManagedQuickBooksConnector, ManagedXeroConnector, load_managed_connectors
+from managed_connectors import (
+    ManagedJobberConnector,
+    ManagedQuickBooksConnector,
+    ManagedXeroConnector,
+    load_managed_connectors,
+)
 
 
 def test_connection_secrets_are_encrypted_at_rest(tmp_path):
@@ -132,3 +137,46 @@ def test_quickbooks_refresh_rotates_tokens_and_preserves_realm(tmp_path, monkeyp
     assert persisted["refresh_token"] == "new-qbo-refresh"
     assert persisted["refresh_expires_at"] > time.time()
     assert b"new-qbo-refresh" not in db.read_bytes()
+
+
+def test_jobber_refresh_rotates_token_before_work_order_api_use(tmp_path, monkeypatch):
+    db = tmp_path / "bookkeeper.sqlite3"
+    store = ConnectionStore(db, CredentialCipher(Fernet.generate_key()))
+    record = store.save(
+        "jobber", "Jobber", [WORK_ORDERS_READ],
+        {
+            "client_id": "jobber-client",
+            "client_secret": "jobber-secret",
+            "access_token": "old-jobber-access",
+            "refresh_token": "old-jobber-refresh",
+            "expires_at": time.time() - 10,
+            "graphql_version": "2025-04-16",
+            "account_id": "acct-1",
+        },
+        status="connected",
+    )
+
+    def fake_post(url, fields, **kwargs):
+        assert url == managed_connectors.JOBBER_TOKEN_URL
+        assert fields == {
+            "client_id": "jobber-client",
+            "client_secret": "jobber-secret",
+            "grant_type": "refresh_token",
+            "refresh_token": "old-jobber-refresh",
+        }
+        return {
+            "access_token": "new-jobber-access",
+            "refresh_token": "new-jobber-refresh",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(managed_connectors, "_post_form", fake_post)
+    connector = ManagedJobberConnector(store, record.connection_id)
+    settings = connector._settings()
+
+    assert settings["access_token"] == "new-jobber-access"
+    assert settings["refresh_token"] == "new-jobber-refresh"
+    assert settings["account_id"] == "acct-1"
+    persisted = store.secrets(record.connection_id)
+    assert persisted["refresh_token"] == "new-jobber-refresh"
+    assert b"new-jobber-refresh" not in db.read_bytes()
