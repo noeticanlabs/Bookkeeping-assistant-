@@ -1,11 +1,12 @@
-from pathlib import Path
+import time
 
 import pytest
 from cryptography.fernet import Fernet
 
 from connection_manager import ConnectionStore, CredentialCipher
 from connectors import ConnectorHub, DEPOSITS_READ, PAYMENTS_READ
-from managed_connectors import load_managed_connectors
+import managed_connectors
+from managed_connectors import ManagedXeroConnector, load_managed_connectors
 
 
 def test_connection_secrets_are_encrypted_at_rest(tmp_path):
@@ -55,3 +56,35 @@ def test_xero_requires_authorization_before_runtime_loading(tmp_path):
 
     assert load_managed_connectors(hub, store) == []
     assert hub.payment_sources() == []
+
+
+def test_xero_refresh_rotates_tokens_inside_encrypted_store(tmp_path, monkeypatch):
+    db = tmp_path / "bookkeeper.sqlite3"
+    store = ConnectionStore(db, CredentialCipher(Fernet.generate_key()))
+    record = store.save(
+        "xero", "Xero", [PAYMENTS_READ, "invoices.write"],
+        {
+            "client_id": "client",
+            "client_secret": "secret",
+            "tenant_id": "tenant",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "expires_at": time.time() - 10,
+        },
+        status="connected",
+    )
+
+    def fake_post(url, fields, **kwargs):
+        assert fields["refresh_token"] == "old-refresh"
+        return {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 1800}
+
+    monkeypatch.setattr(managed_connectors, "_post_form", fake_post)
+    connector = ManagedXeroConnector(store, record.connection_id)
+    settings = connector._settings()
+
+    assert settings["access_token"] == "new-access"
+    assert settings["refresh_token"] == "new-refresh"
+    persisted = store.secrets(record.connection_id)
+    assert persisted["access_token"] == "new-access"
+    assert persisted["refresh_token"] == "new-refresh"
+    assert b"new-refresh" not in db.read_bytes()
