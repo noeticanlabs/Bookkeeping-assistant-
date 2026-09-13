@@ -23,12 +23,21 @@ EXTRACTION_SCHEMA = {
     "additionalProperties": False,
 }
 
+ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+
 
 class OpenAIDocumentConnector:
     """Extract a minimal bookkeeping proposal from an uploaded document."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, client: Any = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        client: Any = None,
+        max_bytes: int = 20 * 1024 * 1024,
+    ):
         self.model = model or os.environ.get("BOOKKEEPER_DOCUMENT_MODEL", "gpt-5.6-luna")
+        self.max_bytes = max_bytes
         if client is not None:
             self.client = client
             return
@@ -47,8 +56,13 @@ class OpenAIDocumentConnector:
         path = Path(document_path)
         if not path.is_file():
             raise ValueError("Document file does not exist")
-        if path.stat().st_size == 0:
+        if path.suffix.lower() not in ALLOWED_SUFFIXES:
+            raise ValueError("Supported document types: PDF, PNG, JPG, JPEG, WEBP")
+        size = path.stat().st_size
+        if size == 0:
             raise ValueError("Document file is empty")
+        if size > self.max_bytes:
+            raise ValueError("Document file is too large")
 
         uploaded = None
         try:
@@ -94,8 +108,12 @@ class OpenAIDocumentConnector:
             if not isinstance(data, dict):
                 raise ValueError("Document extractor returned an invalid result")
             return data
+        except ValueError:
+            raise
         except (json.JSONDecodeError, AttributeError) as exc:
             raise ValueError("Document extractor returned malformed structured data") from exc
+        except Exception as exc:
+            raise ValueError("Document extraction service failed") from exc
         finally:
             if uploaded is not None:
                 try:
