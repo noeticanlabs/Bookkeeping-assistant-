@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Flask, flash, redirect, render_template, request, url_for
 
 from app import BankDeposit, Payment, WorkOrder
+from connector_factory import default_connector_hub
 from connectors import ConnectorHub
 from document_intake import proposal_from_extraction, record_approved_document
 from imports import (
@@ -25,7 +26,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     app = Flask(__name__)
     app.secret_key = os.environ.get("BOOKKEEPER_SECRET", "dev-only-change-me")
     path = Path(data_path or os.environ.get("BOOKKEEPER_DATA", "bookkeeper-data.json"))
-    hub = connectors or ConnectorHub()
+    hub = connectors if connectors is not None else default_connector_hub()
     book = load_bookkeeper(path)
 
     def save() -> None:
