@@ -1,7 +1,7 @@
 from decimal import Decimal
 import pytest
 
-from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, WorkOrder
+from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, VendorBill, WorkOrder
 
 
 def test_payment_cannot_overpay_invoice():
@@ -48,3 +48,46 @@ def test_draft_invoice_is_not_counted_as_expected_receivable():
     book = Bookkeeper()
     book.add_invoice(Invoice("DRAFT-WO-1", "WO-1", "Smith", Decimal("500"), status="draft"))
     assert book.near_term_position()["expected_in"] == Decimal("0")
+
+
+def test_duplicate_invoice_id_is_rejected():
+    book = Bookkeeper()
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
+    with pytest.raises(ValueError):
+        book.add_invoice(Invoice("INV-1", "WO-2", "Jones", Decimal("200")))
+
+
+def test_duplicate_cost_id_is_rejected():
+    book = Bookkeeper()
+    book.add_cost(Cost("C-1", "Vendor", Decimal("10"), "materials"))
+    with pytest.raises(ValueError):
+        book.add_cost(Cost("C-1", "Vendor", Decimal("20"), "materials"))
+
+
+def test_duplicate_vendor_bill_id_is_rejected():
+    book = Bookkeeper()
+    book.add_vendor_bill(VendorBill("BILL-1", "Vendor", Decimal("10")))
+    with pytest.raises(ValueError):
+        book.add_vendor_bill(VendorBill("BILL-1", "Vendor", Decimal("20")))
+
+
+def test_duplicate_deposit_id_is_rejected():
+    book = Bookkeeper()
+    book.add_deposit(BankDeposit("DEP-1", Decimal("100")))
+    with pytest.raises(ValueError):
+        book.add_deposit(BankDeposit("DEP-1", Decimal("200")))
+
+
+def test_invoice_must_have_positive_total_and_valid_paid_amount():
+    book = Bookkeeper()
+    with pytest.raises(ValueError):
+        book.add_invoice(Invoice("INV-0", "WO-1", "Smith", Decimal("0")))
+    with pytest.raises(ValueError):
+        book.add_invoice(Invoice("INV-2", "WO-1", "Smith", Decimal("100"), amount_paid=Decimal("101")))
+
+
+def test_prelinked_payment_cannot_overpay_invoice():
+    book = Bookkeeper()
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
+    with pytest.raises(ValueError):
+        book.add_payment(Payment("PAY-1", Decimal("101"), invoice_id="INV-1"))
