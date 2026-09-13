@@ -103,15 +103,19 @@ class ApprovalPolicyStore:
             )
 
     def create_request(self, subject_type: str, subject_id: str, proposer_user_id: str,
-                       payload: dict[str, object], amount: Decimal | None = None) -> ApprovalRequest:
-        policy = self.load()
+                       payload: dict[str, object], amount: Decimal | None = None,
+                       required_approvals: int | None = None) -> ApprovalRequest:
+        if required_approvals is None:
+            required_approvals = self.load().approvals_required(amount)
+        if required_approvals not in {1, 2}:
+            raise ValueError("Approval requests require 1 or 2 approvals")
         req = ApprovalRequest(
             request_id=f"APR-{uuid.uuid4().hex[:16]}",
             subject_type=subject_type,
             subject_id=subject_id,
             proposer_user_id=proposer_user_id,
             amount=str(amount) if amount is not None else None,
-            required_approvals=policy.approvals_required(amount),
+            required_approvals=required_approvals,
             payload=payload,
             status="pending",
             created_at=datetime.now(timezone.utc).isoformat(),
