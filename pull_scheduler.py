@@ -86,6 +86,14 @@ class PullScheduleStore:
                 """,
                 (connector_id, connector_name, capability, interval_seconds, _iso(next_at)),
             )
+            # Normal discovery must preserve durable backoff state. An explicit
+            # start_immediately request, however, is an operator/test instruction
+            # to pull an existing schedule forward without resetting failures.
+            if start_immediately:
+                conn.execute(
+                    "UPDATE pull_schedules SET next_attempt_at=? WHERE connector_id=? AND capability=?",
+                    (_iso(next_at), connector_id, capability),
+                )
         return self.get(connector_id, capability)
 
     def get(self, connector_id: str, capability: str) -> PullSchedule:
