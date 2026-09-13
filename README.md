@@ -30,6 +30,8 @@ Data is stored in `bookkeeper-data.json` by default. Set `BOOKKEEPER_DATA` to us
 ## Current capabilities
 
 - completed work orders and quote totals
+- CSV work-order import
+- live field-service work-order sync hook
 - job costs and vendor-bill cost treatment
 - draft invoice preparation and invoice review
 - invoice issuance
@@ -41,16 +43,41 @@ Data is stored in `bookkeeper-data.json` by default. Set `BOOKKEEPER_DATA` to us
 - JSON persistence
 - optional connector hooks
 
+## Work-order import contract
+
+All external sources normalize into the same internal `WorkOrder` model.
+
+CSV files require:
+
+```text
+id,customer,description
+```
+
+and may include:
+
+```text
+status,quoted_total
+```
+
+Example:
+
+```csv
+id,customer,description,status,quoted_total
+WO-1842,Smith Residence,Water heater replacement,complete,2450.00
+```
+
+A live field-service adapter implements `pull_work_orders()` and returns normalized `WorkOrder` objects. CSV import and live connector sync then use the exact same import service, duplicate handling, persistence, invoice workflow, and downstream bookkeeping rules.
+
 ## Integration hooks
 
 `connectors.py` defines optional contracts for:
 
-- field-service systems
-- accounting systems
-- document extraction
-- event sinks / automation
+- field-service systems: pull work orders and issue invoices
+- accounting systems: push invoices and pull payments/deposits
+- document extraction: convert receipts/bills into structured data
+- event sinks / automation: observe workflow events without owning bookkeeping state
 
-Vendor-specific adapters are intentionally not implemented until a real integration is needed.
+Vendor-specific adapters remain thin transport/translation layers. They should not contain bookkeeping policy that belongs in the core.
 
 ## Run tests
 
