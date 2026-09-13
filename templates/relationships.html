@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Economic Relationships</title>
+  <style>
+    body { font-family: sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; }
+    th, td { text-align: left; padding: .6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    form.inline { display: inline; }
+    label { display: block; margin: .5rem 0; }
+    input { padding: .35rem; min-width: 12rem; }
+    .candidate { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('exception_dashboard') }}">Exceptions</a>
+  </nav>
+
+  <h1>Economic Relationships</h1>
+  <p>Core record references are shown as verified relationships. Extra/manual links remain candidates until reviewed.</p>
+
+  <table>
+    <thead><tr><th>From</th><th>Relationship</th><th>To</th><th>Status</th><th>Source</th><th>Confidence</th><th>Decision</th></tr></thead>
+    <tbody>
+    {% for link in links %}
+      <tr>
+        <td>{{ link.from_type }}: {{ link.from_id }}</td>
+        <td>{{ link.relationship }}</td>
+        <td>{{ link.to_type }}: {{ link.to_id }}</td>
+        <td class="{{ link.status }}">{{ link.status }}</td>
+        <td>{{ link.source }}</td>
+        <td>{{ link.confidence if link.confidence is not none else '—' }}</td>
+        <td>
+        {% if link.source != 'core' and link.status == 'candidate' and has_permission('bookkeeping.write') %}
+          <form class="inline" method="post" action="{{ url_for('decide_relationship', link_id=link.link_id, decision='verified') }}"><button>Verify</button></form>
+          <form class="inline" method="post" action="{{ url_for('decide_relationship', link_id=link.link_id, decision='rejected') }}"><button>Reject</button></form>
+        {% else %}—{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if has_permission('bookkeeping.write') %}
+  <h2>Add candidate relationship</h2>
+  <form method="post" action="{{ url_for('add_relationship') }}">
+    <label>From type <input name="from_type" required></label>
+    <label>From ID <input name="from_id" required></label>
+    <label>Relationship <input name="relationship" placeholder="supports / belongs_to / settles" required></label>
+    <label>To type <input name="to_type" required></label>
+    <label>To ID <input name="to_id" required></label>
+    <label>Evidence ID <input name="evidence_id"></label>
+    <label>Confidence 0–1 <input name="confidence" type="number" min="0" max="1" step="0.01"></label>
+    <button type="submit">Record candidate</button>
+  </form>
+  {% endif %}
+</body>
+</html>
