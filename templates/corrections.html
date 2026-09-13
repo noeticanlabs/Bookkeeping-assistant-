@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cost Corrections — Bookkeeper Assistant</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1050px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border:1px solid #ddd; border-radius:10px; padding:1rem; margin:1rem 0; }
+    form { display:flex; flex-wrap:wrap; gap:.55rem; align-items:end; }
+    input, select, button { padding:.55rem; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; border-bottom:1px solid #eee; padding:.6rem; vertical-align:top; }
+    .old { opacity:.65; }
+    .pending { font-weight:700; }
+    small { opacity:.75; }
+  </style>
+</head>
+<body>
+  <p><a href="/">← Dashboard</a></p>
+  <h1>Cost corrections</h1>
+  <p>Corrections never overwrite the original cost. Approval creates a replacement version and supersedes the prior record.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<p>{{ message }}</p>{% endfor %}
+  {% endwith %}
+
+  <h2>Current costs</h2>
+  {% for cost in book.current_costs() %}
+    <div class="card">
+      <strong>{{ cost.id }}</strong> — {{ cost.vendor }} — ${{ cost.amount }} — {{ cost.work_order_id or 'unassigned' }}
+      <form method="post" action="/costs/{{ cost.id }}/corrections">
+        <input name="replacement_cost_id" placeholder="New cost ID" value="{{ cost.id }}-R1" required>
+        <input name="vendor" value="{{ cost.vendor }}" placeholder="Vendor" required>
+        <input name="amount" value="{{ cost.amount }}" placeholder="Correct amount" required>
+        <select name="work_order_id">
+          <option value="">Unassigned / overhead</option>
+          {% for wo in book.work_orders.values() %}
+            <option value="{{ wo.id }}" {% if cost.work_order_id == wo.id %}selected{% endif %}>{{ wo.id }} — {{ wo.customer }}</option>
+          {% endfor %}
+        </select>
+        <input name="reference" value="{{ cost.reference or '' }}" placeholder="Reference">
+        <input name="reason" placeholder="Why is this being corrected?" required>
+        <input name="actor" placeholder="Proposed by" required>
+        <button>Propose correction</button>
+      </form>
+    </div>
+  {% else %}
+    <p>No current costs to correct.</p>
+  {% endfor %}
+
+  <h2>Pending corrections</h2>
+  <table>
+    <tr><th>Correction</th><th>Original</th><th>Proposed replacement</th><th>Reason</th><th>Decision</th></tr>
+    {% for correction in corrections if correction.status == 'pending' %}
+      <tr>
+        <td>{{ correction.correction_id }}<br><small>{{ correction.proposed_by }} at {{ correction.proposed_at }}</small></td>
+        <td>{{ correction.original_cost_id }}</td>
+        <td>{{ correction.replacement_cost_id }} — {{ correction.proposed_vendor }} — ${{ correction.proposed_amount }} — {{ correction.proposed_work_order_id or 'unassigned' }}</td>
+        <td>{{ correction.reason }}</td>
+        <td>
+          <form method="post" action="/corrections/{{ correction.correction_id }}/approve">
+            <input name="actor" placeholder="Approved by" required>
+            <button>Approve</button>
+          </form>
+          <form method="post" action="/corrections/{{ correction.correction_id }}/reject">
+            <input name="actor" placeholder="Rejected by" required>
+            <button>Reject</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">No pending corrections.</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Version history</h2>
+  <table>
+    <tr><th>Cost</th><th>Vendor</th><th>Amount</th><th>Job</th><th>Version link</th><th>Status</th></tr>
+    {% for cost in book.costs.values() %}
+      <tr class="{% if not cost.is_current %}old{% endif %}">
+        <td>{{ cost.id }}</td><td>{{ cost.vendor }}</td><td>${{ cost.amount }}</td><td>{{ cost.work_order_id or '—' }}</td>
+        <td>{% if cost.correction_of %}corrects {{ cost.correction_of }}{% elif cost.superseded_by %}superseded by {{ cost.superseded_by }}{% else %}original{% endif %}</td>
+        <td>{{ 'current' if cost.is_current else 'superseded' }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
