@@ -3,6 +3,7 @@
 import os
 
 from auth_web import install_auth
+from csrf import install_csrf
 from onboarding import install_onboarding
 from readiness import install_readiness
 from sod_web import install_separation_of_duties
@@ -14,6 +15,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app = create_app(data_path, connectors=connectors)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
+    install_csrf(app)
     install_auth(app, db_path)
     install_separation_of_duties(app, db_path)
     install_onboarding(app, db_path)
