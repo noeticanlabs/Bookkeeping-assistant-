@@ -4,6 +4,7 @@ import os
 import secrets
 
 from auth_web import install_auth
+from connection_health import install_connection_health
 from connection_manager import ConnectionStore, CredentialCipher
 from connection_manager_web import install_connection_manager
 from csrf import install_csrf
@@ -45,6 +46,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_separation_of_duties(app, db_path)
     install_multi_connector_routes(app)
     install_connection_manager(app, connection_store)
+    install_connection_health(app, connection_store)
     install_onboarding(app, db_path)
     install_readiness(app)
     return app
