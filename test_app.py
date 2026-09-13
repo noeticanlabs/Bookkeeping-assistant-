@@ -4,8 +4,14 @@ import pytest
 from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, VendorBill, WorkOrder
 
 
-def test_near_term_position_is_open_ar_minus_open_ap():
+def _book_with_work_order() -> Bookkeeper:
     book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Service", "complete", Decimal("2000")))
+    return book
+
+
+def test_near_term_position_is_open_ar_minus_open_ap():
+    book = _book_with_work_order()
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("2000"), status="issued", amount_paid=Decimal("500")))
     book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("900"), amount_paid=Decimal("200")))
     position = book.near_term_position()
@@ -15,14 +21,14 @@ def test_near_term_position_is_open_ar_minus_open_ap():
 
 
 def test_paid_items_do_not_affect_near_term_position():
-    book = Bookkeeper()
+    book = _book_with_work_order()
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("500"), status="issued", amount_paid=Decimal("500")))
     book.add_vendor_bill(VendorBill("BILL-1", "City", Decimal("75"), amount_paid=Decimal("75")))
     assert book.near_term_position()["net_position"] == Decimal("0")
 
 
 def test_attention_summary_includes_near_term_position():
-    book = Bookkeeper()
+    book = _book_with_work_order()
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("1000"), status="issued", amount_paid=Decimal("250")))
     book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("400")))
     summary = book.attention_summary()
@@ -46,6 +52,20 @@ def test_vendor_payment_cannot_exceed_balance():
     book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("700")))
     with pytest.raises(ValueError):
         book.pay_vendor_bill("BILL-1", Decimal("701"))
+
+
+def test_invoice_cannot_reference_unknown_work_order():
+    book = Bookkeeper()
+    with pytest.raises(ValueError, match="Unknown work order"):
+        book.add_invoice(Invoice("INV-1", "WO-MISSING", "Smith", Decimal("100")))
+    assert "INV-1" not in book.invoices
+
+
+def test_prelinked_payment_cannot_reference_unknown_invoice():
+    book = Bookkeeper()
+    with pytest.raises(ValueError, match="Unknown invoice"):
+        book.add_payment(Payment("PAY-1", Decimal("100"), invoice_id="INV-MISSING"))
+    assert "PAY-1" not in book.payments
 
 
 def test_clean_customer_cash_chain_still_works():
