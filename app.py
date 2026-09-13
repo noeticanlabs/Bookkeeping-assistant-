@@ -39,12 +39,21 @@ class Invoice:
     def balance_due(self) -> Money:
         return self.total - self.amount_paid
 
+    @property
+    def payment_status(self) -> str:
+        if self.amount_paid <= 0:
+            return "unpaid"
+        if self.balance_due > 0:
+            return "partial"
+        return "paid"
+
 
 @dataclass
 class Payment:
     id: str
     amount: Money
     invoice_id: str | None = None
+    reference: str | None = None
 
 
 @dataclass
@@ -82,7 +91,6 @@ class Bookkeeper:
         self.costs[cost.id] = cost
 
     def suggest_cost_match(self, cost_id: str) -> str | None:
-        """Suggest only when the cost reference explicitly contains one known WO id."""
         cost = self.costs[cost_id]
         if not cost.reference:
             return None
@@ -107,9 +115,35 @@ class Bookkeeper:
         self.invoices[invoice.id] = invoice
 
     def add_payment(self, payment: Payment) -> None:
+        if payment.amount <= 0:
+            raise ValueError("Payment amount must be greater than zero")
         self.payments[payment.id] = payment
         if payment.invoice_id and payment.invoice_id in self.invoices:
             self.invoices[payment.invoice_id].amount_paid += payment.amount
+
+    def suggest_payment_match(self, payment_id: str) -> str | None:
+        payment = self.payments[payment_id]
+        if not payment.reference:
+            return None
+        reference = payment.reference.upper()
+        matches = [invoice_id for invoice_id in self.invoices if invoice_id.upper() in reference]
+        return matches[0] if len(matches) == 1 else None
+
+    def match_payment(self, payment_id: str, invoice_id: str) -> Payment:
+        if invoice_id not in self.invoices:
+            raise ValueError("Unknown invoice")
+        payment = self.payments[payment_id]
+        if payment.invoice_id:
+            raise ValueError("Payment is already matched")
+        payment.invoice_id = invoice_id
+        self.invoices[invoice_id].amount_paid += payment.amount
+        return payment
+
+    def accept_payment_match(self, payment_id: str) -> Payment:
+        suggestion = self.suggest_payment_match(payment_id)
+        if suggestion is None:
+            raise ValueError("No unambiguous invoice match")
+        return self.match_payment(payment_id, suggestion)
 
     def invoice_for(self, work_order_id: str) -> Invoice | None:
         return next((i for i in self.invoices.values() if i.work_order_id == work_order_id), None)
@@ -171,8 +205,10 @@ class Bookkeeper:
                 message = f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead"
                 issues.append(ReviewItem("unassigned_cost", message, cost.id))
         for payment in self.payments.values():
-            if payment.invoice_id is None or payment.invoice_id not in self.invoices:
-                issues.append(ReviewItem("unmatched_payment", "Payment is not matched to an invoice", payment.id))
+            if payment.invoice_id is None:
+                suggestion = self.suggest_payment_match(payment.id)
+                message = f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to an invoice"
+                issues.append(ReviewItem("unmatched_payment", message, payment.id))
         return issues
 
 
