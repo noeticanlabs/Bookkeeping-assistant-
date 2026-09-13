@@ -116,17 +116,15 @@ def test_threshold_blocks_authenticated_non_approver(tmp_path):
     assert "COST-1" not in app.config["BOOKKEEPER"].costs
 
 
-def test_authorized_role_can_approve_threshold_document(tmp_path):
+def test_authorized_user_submits_document_then_independent_approver_posts_it(tmp_path):
     app = create_secure_app(str(tmp_path / "bookkeeper.json"))
     app.config.update(TESTING=True)
     admin_client = app.test_client()
     bootstrap(admin_client)
 
-    company = app.config["COMPANY_CONFIG"]
-    company.profile.approval_threshold = Decimal("100")
-    company.profile.approver_roles = ("Owner",)
-    company.save()
-    owner = app.config["USER_STORE"].create_user("owner", "Company Owner", "Owner", "company-owner-123")
+    users = app.config["USER_STORE"]
+    owner = users.create_user("owner", "Company Owner", "Owner", "company-owner-123")
+    second_owner = users.create_user("owner2", "Second Owner", "Owner", "second-owner-123")
 
     provenance = app.config["PROVENANCE"]
     source_file = tmp_path / "receipt.txt"
@@ -144,7 +142,13 @@ def test_authorized_role_can_approve_threshold_document(tmp_path):
         "evidence_id": evidence.evidence_id, "record_id": "COST-1", "vendor": "Vendor",
         "amount": "500", "reference": "R-1", "record_type": "cost", "treatment": "ask",
     })
+    assert "COST-1" not in app.config["BOOKKEEPER"].costs
+    req = app.config["APPROVAL_POLICY"].pending()[0]
+
+    with client.session_transaction() as session:
+        session["user_id"] = second_owner.user_id
+    client.post(f"/approvals/{req.request_id}/approve")
     assert "COST-1" in app.config["BOOKKEEPER"].costs
     event = [e for e in app.config["AUDIT_LOG"].events() if e.event_type == "document.approved"][-1]
-    assert event.payload["authenticated_user_id"] == owner.user_id
-    assert "Company Owner" in event.actor
+    assert second_owner.user_id in event.payload["approver_ids"]
+    assert "Second Owner" in event.actor
