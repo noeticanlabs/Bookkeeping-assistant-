@@ -27,6 +27,28 @@ class Cost:
 
 
 @dataclass
+class VendorBill:
+    id: str
+    vendor: str
+    amount: Money
+    due_date: str | None = None
+    amount_paid: Money = Decimal("0")
+    work_order_id: str | None = None
+
+    @property
+    def balance_due(self) -> Money:
+        return self.amount - self.amount_paid
+
+    @property
+    def payment_status(self) -> str:
+        if self.amount_paid <= 0:
+            return "unpaid"
+        if self.balance_due > 0:
+            return "partial"
+        return "paid"
+
+
+@dataclass
 class Invoice:
     id: str
     work_order_id: str
@@ -88,6 +110,7 @@ class InvoiceReview:
 class Bookkeeper:
     work_orders: dict[str, WorkOrder] = field(default_factory=dict)
     costs: dict[str, Cost] = field(default_factory=dict)
+    vendor_bills: dict[str, VendorBill] = field(default_factory=dict)
     invoices: dict[str, Invoice] = field(default_factory=dict)
     payments: dict[str, Payment] = field(default_factory=dict)
     deposits: dict[str, BankDeposit] = field(default_factory=dict)
@@ -99,6 +122,32 @@ class Bookkeeper:
         if cost.amount <= 0:
             raise ValueError("Cost amount must be greater than zero")
         self.costs[cost.id] = cost
+
+    def add_vendor_bill(self, bill: VendorBill) -> None:
+        if bill.amount <= 0:
+            raise ValueError("Vendor bill amount must be greater than zero")
+        if bill.amount_paid < 0 or bill.amount_paid > bill.amount:
+            raise ValueError("Invalid vendor bill payment amount")
+        if bill.work_order_id and bill.work_order_id not in self.work_orders:
+            raise ValueError("Unknown work order")
+        self.vendor_bills[bill.id] = bill
+
+    def pay_vendor_bill(self, bill_id: str, amount: Money) -> VendorBill:
+        if amount <= 0:
+            raise ValueError("Vendor payment must be greater than zero")
+        bill = self.vendor_bills[bill_id]
+        if amount > bill.balance_due:
+            raise ValueError("Vendor payment exceeds balance due")
+        bill.amount_paid += amount
+        return bill
+
+    def accounts_payable_summary(self) -> dict[str, object]:
+        open_bills = [b for b in self.vendor_bills.values() if b.payment_status != "paid"]
+        return {
+            "open_bill_count": len(open_bills),
+            "open_bill_balance": sum((b.balance_due for b in open_bills), Decimal("0")),
+            "open_bills": open_bills,
+        }
 
     def suggest_cost_match(self, cost_id: str) -> str | None:
         cost = self.costs[cost_id]
@@ -275,9 +324,9 @@ class Bookkeeper:
         return issues
 
     def attention_summary(self) -> dict[str, object]:
-        """Small owner/bookkeeper dashboard: what needs action right now."""
         issues = self.review()
         unpaid = [i for i in self.invoices.values() if i.payment_status != "paid"]
+        ap = self.accounts_payable_summary()
         return {
             "completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"),
             "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"),
@@ -285,6 +334,8 @@ class Bookkeeper:
             "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}),
             "open_invoice_count": len(unpaid),
             "open_invoice_balance": sum((i.balance_due for i in unpaid), Decimal("0")),
+            "open_bill_count": ap["open_bill_count"],
+            "open_bill_balance": ap["open_bill_balance"],
             "needs_attention": issues,
         }
 
