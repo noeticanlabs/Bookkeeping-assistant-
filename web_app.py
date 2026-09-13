@@ -8,11 +8,8 @@ from pathlib import Path
 from flask import Flask, flash, redirect, render_template, request, url_for
 
 from app import BankDeposit, Payment, WorkOrder
-from audit_log import AuditLog
-from company_config import CompanyConfigStore
 from connector_factory import default_connector_hub
 from connectors import ConnectorHub
-from corrections import CorrectionStore
 from document_intake import proposal_from_extraction, record_approved_document
 from imports import (
     import_deposits,
@@ -22,27 +19,36 @@ from imports import (
     import_work_orders,
     import_work_orders_csv,
 )
-from provenance import ProvenanceStore
-from storage import load_bookkeeper, save_bookkeeper
+from sqlite_store import (
+    SQLiteAuditLog,
+    SQLiteCompanyConfigStore,
+    SQLiteCorrectionStore,
+    SQLiteProvenanceStore,
+    load_bookkeeper,
+    migrate_legacy,
+    save_bookkeeper,
+)
 
 
 def create_app(data_path: str | None = None, connectors: ConnectorHub | None = None) -> Flask:
     app = Flask(__name__)
     app.secret_key = os.environ.get("BOOKKEEPER_SECRET", "dev-only-change-me")
-    path = Path(data_path or os.environ.get("BOOKKEEPER_DATA", "bookkeeper-data.json"))
+    legacy_path = Path(data_path or os.environ.get("BOOKKEEPER_DATA", "bookkeeper-data.json"))
+    db_path = legacy_path if legacy_path.suffix in {".sqlite", ".sqlite3", ".db"} else legacy_path.with_suffix(".sqlite3")
+    migrate_legacy(db_path, legacy_path)
     hub = connectors if connectors is not None else default_connector_hub()
-    book = load_bookkeeper(path)
-    company = CompanyConfigStore(path.with_name(f"{path.stem}-company.json"))
+    book = load_bookkeeper(db_path)
+    company = SQLiteCompanyConfigStore(db_path)
     book.vendor_bill_mode = company.profile.vendor_bill_mode
-    provenance = ProvenanceStore(
-        path.with_name(f"{path.stem}-provenance.json"),
-        path.parent / f"{path.stem}-documents",
+    provenance = SQLiteProvenanceStore(
+        db_path,
+        legacy_path.parent / f"{legacy_path.stem}-documents",
     )
-    audit = AuditLog(path.with_name(f"{path.stem}-audit.jsonl"))
-    corrections = CorrectionStore(path.with_name(f"{path.stem}-corrections.json"))
+    audit = SQLiteAuditLog(db_path)
+    corrections = SQLiteCorrectionStore(db_path)
 
     def save() -> None:
-        save_bookkeeper(book, path)
+        save_bookkeeper(book, db_path)
 
     def run(action):
         try:
@@ -518,7 +524,8 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
         return redirect(url_for("dashboard"))
 
     app.config["BOOKKEEPER"] = book
-    app.config["BOOKKEEPER_DATA_PATH"] = str(path)
+    app.config["BOOKKEEPER_DATA_PATH"] = str(db_path)
+    app.config["BOOKKEEPER_LEGACY_PATH"] = str(legacy_path)
     app.config["COMPANY_CONFIG"] = company
     app.config["PROVENANCE"] = provenance
     app.config["AUDIT_LOG"] = audit
