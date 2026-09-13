@@ -1,4 +1,8 @@
-"""Very small JSON persistence layer for the usable MVP."""
+"""Legacy JSON persistence layer.
+
+The runnable app now uses SQLite. These helpers remain for legacy import/tests and can
+transparently read the sibling SQLite database after migration.
+"""
 
 import json
 from dataclasses import asdict
@@ -14,6 +18,10 @@ def _money(value: object) -> Decimal:
 
 def save_bookkeeper(book: Bookkeeper, path: str | Path) -> None:
     target = Path(path)
+    if target.suffix in {".sqlite", ".sqlite3", ".db"}:
+        from sqlite_store import save_bookkeeper as save_sqlite
+        save_sqlite(book, target)
+        return
     data = {
         "vendor_bill_mode": book.vendor_bill_mode,
         "work_orders": [asdict(x) for x in book.work_orders.values()],
@@ -29,7 +37,14 @@ def save_bookkeeper(book: Bookkeeper, path: str | Path) -> None:
 
 def load_bookkeeper(path: str | Path) -> Bookkeeper:
     source = Path(path)
+    if source.suffix in {".sqlite", ".sqlite3", ".db"}:
+        from sqlite_store import load_bookkeeper as load_sqlite
+        return load_sqlite(source)
     if not source.exists():
+        sqlite_path = source.with_suffix(".sqlite3")
+        if sqlite_path.exists():
+            from sqlite_store import load_bookkeeper as load_sqlite
+            return load_sqlite(sqlite_path)
         return Bookkeeper()
 
     data = json.loads(source.read_text(encoding="utf-8"))
@@ -52,7 +67,6 @@ def load_bookkeeper(path: str | Path) -> Bookkeeper:
     for row in data.get("payments", []):
         row["amount"] = _money(row["amount"])
         payment = Payment(**row)
-        # Load without re-applying invoice totals already stored on the invoice.
         if payment.id in book.payments:
             raise ValueError("Duplicate payment ID in storage")
         book.payments[payment.id] = payment
