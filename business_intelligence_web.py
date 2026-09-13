@@ -1,4 +1,4 @@
-"""Operator views for economic relationships, exceptions, and invoice readiness."""
+"""Operator views for economic relationships, exceptions, invoice readiness, and verification."""
 
 from __future__ import annotations
 
@@ -6,11 +6,14 @@ from flask import flash, g, redirect, render_template, request, url_for
 
 from business_intelligence import completed_job_readiness, exception_queue, invoice_readiness
 from economic_links import RecordLinkStore, all_relationships
+from verifier_registry import default_registry
 
 
 def install_business_intelligence(app, db_path) -> RecordLinkStore:
     links = RecordLinkStore(db_path)
+    verifiers = default_registry()
     app.config["RECORD_LINKS"] = links
+    app.config["VERIFIER_REGISTRY"] = verifiers
 
     def can_write() -> bool:
         permissions = app.config.get("PERMISSION_STORE")
@@ -27,8 +30,18 @@ def install_business_intelligence(app, db_path) -> RecordLinkStore:
         book = app.config["BOOKKEEPER"]
         return render_template(
             "exceptions.html",
-            exceptions=exception_queue(book),
+            exceptions=exception_queue(book, verifier_registry=verifiers),
             readiness=completed_job_readiness(book),
+        )
+
+    @app.get("/verifications")
+    def verification_dashboard():
+        book = app.config["BOOKKEEPER"]
+        results = verifiers.run(book)
+        return render_template(
+            "verifications.html",
+            results=results,
+            summary=verifiers.summary(book),
         )
 
     @app.get("/relationships")
