@@ -91,3 +91,50 @@ def test_prelinked_payment_cannot_overpay_invoice():
     book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("100")))
     with pytest.raises(ValueError):
         book.add_payment(Payment("PAY-1", Decimal("101"), invoice_id="INV-1"))
+
+
+def test_ask_mode_flags_untreated_vendor_bill():
+    book = Bookkeeper()
+    book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("100")))
+    assert any(item.kind == "vendor_bill_treatment" for item in book.review())
+
+
+def test_create_cost_mode_adds_bill_once_to_job_cost():
+    book = Bookkeeper(vendor_bill_mode="create_cost")
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
+    book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("100"), work_order_id="WO-1"))
+    bill = book.treat_vendor_bill("BILL-1")
+    assert bill.treatment == "create_cost"
+    assert book.job_cost("WO-1") == Decimal("100")
+    with pytest.raises(ValueError):
+        book.treat_vendor_bill("BILL-1")
+    assert book.job_cost("WO-1") == Decimal("100")
+
+
+def test_support_cost_mode_does_not_double_count_job_cost():
+    book = Bookkeeper(vendor_bill_mode="support_cost")
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
+    book.add_cost(Cost("C-1", "Ferguson", Decimal("100"), "materials", work_order_id="WO-1"))
+    book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("100"), work_order_id="WO-1"))
+    bill = book.treat_vendor_bill("BILL-1", linked_cost_id="C-1")
+    assert bill.treatment == "support_cost"
+    assert bill.linked_cost_id == "C-1"
+    assert book.job_cost("WO-1") == Decimal("100")
+
+
+def test_overhead_vendor_bill_does_not_enter_job_cost():
+    book = Bookkeeper()
+    book.add_vendor_bill(VendorBill("BILL-1", "Insurance", Decimal("500")))
+    bill = book.treat_vendor_bill("BILL-1", treatment="overhead")
+    assert bill.treatment == "overhead"
+    assert sum(book.job_cost(wo_id) for wo_id in book.work_orders) == Decimal("0")
+
+
+def test_support_cost_rejects_different_work_order():
+    book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
+    book.add_work_order(WorkOrder("WO-2", "Jones", "Repair"))
+    book.add_cost(Cost("C-1", "Ferguson", Decimal("100"), "materials", work_order_id="WO-1"))
+    book.add_vendor_bill(VendorBill("BILL-1", "Ferguson", Decimal("100"), work_order_id="WO-2"))
+    with pytest.raises(ValueError):
+        book.treat_vendor_bill("BILL-1", treatment="support_cost", linked_cost_id="C-1")
