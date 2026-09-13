@@ -6,8 +6,9 @@ from pathlib import Path
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from app import BankDeposit, Bookkeeper, Invoice, Payment, WorkOrder
+from app import BankDeposit, Bookkeeper, Payment, WorkOrder
 from connectors import ConnectorHub
+from imports import import_work_orders, import_work_orders_csv
 from storage import load_bookkeeper, save_bookkeeper
 
 
@@ -37,6 +38,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             book=book,
             summary=book.attention_summary(),
             reviews=book.completed_job_invoice_reviews(),
+            field_service_connected=hub.field_service is not None,
         )
 
     @app.post("/work-orders")
@@ -52,6 +54,34 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             )
             book.add_work_order(wo)
             hub.emit("work_order.added", {"work_order_id": wo.id})
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/imports/work-orders/csv")
+    def import_work_order_csv():
+        def action():
+            uploaded = request.files.get("file")
+            if uploaded is None or not uploaded.filename:
+                raise ValueError("Choose a CSV file")
+            text = uploaded.read().decode("utf-8-sig")
+            result = import_work_orders_csv(book, text)
+            if result.errors:
+                flash("; ".join(result.errors), "error")
+            flash(f"Imported {result.added} work orders; skipped {result.skipped} existing", "success")
+            hub.emit("work_orders.imported", {"source": "csv", "added": result.added, "skipped": result.skipped})
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/sync/field-service")
+    def sync_field_service():
+        def action():
+            if not hub.field_service:
+                raise ValueError("No field-service connector is configured")
+            result = import_work_orders(book, hub.field_service.pull_work_orders())
+            if result.errors:
+                flash("; ".join(result.errors), "error")
+            flash(f"Synced {result.added} work orders; skipped {result.skipped} existing", "success")
+            hub.emit("work_orders.imported", {"source": "field_service", "added": result.added, "skipped": result.skipped})
         run(action)
         return redirect(url_for("dashboard"))
 
