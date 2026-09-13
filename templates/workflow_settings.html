@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Workflow Controls — Bookkeeper Assistant</title>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}form{display:grid;gap:.8rem;max-width:620px}input,select,button{padding:.65rem;font:inherit}table{width:100%;border-collapse:collapse;margin-top:1.5rem}th,td{padding:.6rem;border-bottom:1px solid #eee;text-align:left}.error{background:#ffecec;padding:.6rem}.success{background:#edf9ed;padding:.6rem}</style></head>
+<body><p><a href="/">← Dashboard</a></p><h1>Workflow approval rules</h1>
+<p>Set how many independent approvals each action needs. Use 0 for direct posting, 1 for one independent approver, or 2 for two independent approvers.</p>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<p class="{{category}}">{{message}}</p>{% endfor %}{% endwith %}
+<form method="post">
+<label>Action type<select name="action_type">{% for action in action_types %}<option value="{{action}}">{{action}}</option>{% endfor %}</select></label>
+<label>Base approvals<select name="base_approvals"><option>0</option><option selected>1</option><option>2</option></select></label>
+<label>Optional amount threshold<input name="threshold" inputmode="decimal" placeholder="5000.00"></label>
+<label>Approvals at/above threshold<select name="threshold_approvals"><option>0</option><option>1</option><option selected>2</option></select></label>
+<button>Save workflow rule</button>
+</form>
+<table><tr><th>Action</th><th>Minimum amount</th><th>Approvals</th></tr>{% for rule in rules %}<tr><td>{{rule.action_type}}</td><td>{{rule.min_amount if rule.min_amount is not none else 'Base'}}</td><td>{{rule.approvals_required}}</td></tr>{% endfor %}</table>
+</body></html>
