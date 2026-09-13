@@ -12,6 +12,7 @@
     input, select, button { padding:.65rem; font:inherit; }
     .note { background:#f5f5f5; padding:.8rem; border-radius:7px; }
     .actions { display:flex; gap:.75rem; align-items:center; }
+    code { overflow-wrap:anywhere; }
     small { font-weight:400; opacity:.75; }
   </style>
 </head>
@@ -21,7 +22,11 @@
 
   <div class="card">
     <p><strong>Source:</strong> {{ proposal.filename }}</p>
+    <p><strong>Evidence ID:</strong> {{ evidence.evidence_id }}<br>
+      <small>SHA-256: <code>{{ evidence.sha256 }}</code></small>
+    </p>
     <form method="post" action="/documents/approve">
+      <input type="hidden" name="evidence_id" value="{{ evidence.evidence_id }}">
       <label>Record ID
         <input name="record_id" value="{{ proposal.document_id or '' }}" placeholder="BILL-1042 or COST-1042" required>
       </label>
