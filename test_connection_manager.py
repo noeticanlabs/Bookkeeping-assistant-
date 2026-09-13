@@ -6,7 +6,7 @@ from cryptography.fernet import Fernet
 from connection_manager import ConnectionStore, CredentialCipher
 from connectors import ConnectorHub, DEPOSITS_READ, PAYMENTS_READ
 import managed_connectors
-from managed_connectors import ManagedXeroConnector, load_managed_connectors
+from managed_connectors import ManagedQuickBooksConnector, ManagedXeroConnector, load_managed_connectors
 
 
 def test_connection_secrets_are_encrypted_at_rest(tmp_path):
@@ -88,3 +88,47 @@ def test_xero_refresh_rotates_tokens_inside_encrypted_store(tmp_path, monkeypatc
     assert persisted["access_token"] == "new-access"
     assert persisted["refresh_token"] == "new-refresh"
     assert b"new-refresh" not in db.read_bytes()
+
+
+def test_quickbooks_refresh_rotates_tokens_and_preserves_realm(tmp_path, monkeypatch):
+    db = tmp_path / "bookkeeper.sqlite3"
+    store = ConnectionStore(db, CredentialCipher(Fernet.generate_key()))
+    record = store.save(
+        "quickbooks", "QuickBooks Online", [PAYMENTS_READ, DEPOSITS_READ],
+        {
+            "client_id": "qbo-client",
+            "client_secret": "qbo-secret",
+            "realm_id": "company-123",
+            "access_token": "old-qbo-access",
+            "refresh_token": "old-qbo-refresh",
+            "expires_at": time.time() - 10,
+            "sandbox": True,
+        },
+        status="connected",
+    )
+
+    def fake_post(url, fields, **kwargs):
+        assert url == managed_connectors.QBO_TOKEN_URL
+        assert fields["grant_type"] == "refresh_token"
+        assert fields["refresh_token"] == "old-qbo-refresh"
+        assert kwargs["basic_user"] == "qbo-client"
+        assert kwargs["basic_password"] == "qbo-secret"
+        return {
+            "access_token": "new-qbo-access",
+            "refresh_token": "new-qbo-refresh",
+            "expires_in": 3600,
+            "x_refresh_token_expires_in": 8640000,
+        }
+
+    monkeypatch.setattr(managed_connectors, "_post_form", fake_post)
+    connector = ManagedQuickBooksConnector(store, record.connection_id)
+    settings = connector._settings()
+
+    assert settings["access_token"] == "new-qbo-access"
+    assert settings["refresh_token"] == "new-qbo-refresh"
+    assert settings["realm_id"] == "company-123"
+    persisted = store.secrets(record.connection_id)
+    assert persisted["realm_id"] == "company-123"
+    assert persisted["refresh_token"] == "new-qbo-refresh"
+    assert persisted["refresh_expires_at"] > time.time()
+    assert b"new-qbo-refresh" not in db.read_bytes()
