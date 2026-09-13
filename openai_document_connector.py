@@ -104,13 +104,16 @@ class OpenAIDocumentConnector:
             raw = response.output_text
             if not raw:
                 raise ValueError("Document extractor returned no result")
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Document extractor returned malformed structured data") from exc
             if not isinstance(data, dict):
                 raise ValueError("Document extractor returned an invalid result")
             return data
         except ValueError:
             raise
-        except (json.JSONDecodeError, AttributeError) as exc:
+        except AttributeError as exc:
             raise ValueError("Document extractor returned malformed structured data") from exc
         except Exception as exc:
             raise ValueError("Document extraction service failed") from exc
