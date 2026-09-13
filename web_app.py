@@ -19,6 +19,7 @@ from imports import (
     import_work_orders,
     import_work_orders_csv,
 )
+from provenance import ProvenanceStore
 from storage import load_bookkeeper, save_bookkeeper
 
 
@@ -28,6 +29,10 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     path = Path(data_path or os.environ.get("BOOKKEEPER_DATA", "bookkeeper-data.json"))
     hub = connectors if connectors is not None else default_connector_hub()
     book = load_bookkeeper(path)
+    provenance = ProvenanceStore(
+        path.with_name(f"{path.stem}-provenance.json"),
+        path.parent / f"{path.stem}-documents",
+    )
 
     def save() -> None:
         save_bookkeeper(book, path)
@@ -57,6 +62,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             field_service_connected=hub.field_service is not None,
             accounting_connected=hub.accounting is not None,
             document_connected=hub.documents is not None,
+            source_documents=provenance.documents.values(),
         )
 
     @app.post("/work-orders")
@@ -91,15 +97,30 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp:
                 uploaded.save(temp)
                 temp_path = temp.name
+
+            sha256 = provenance.sha256_file(temp_path)
+            existing = provenance.by_sha256(sha256)
+            if existing:
+                bound = (
+                    f" and is already bound to {existing.approved_record_type} {existing.approved_record_id}"
+                    if existing.approved_record_id
+                    else ""
+                )
+                raise ValueError(f"Duplicate document already captured as {existing.evidence_id}{bound}")
+
+            evidence = provenance.capture(temp_path, uploaded.filename)
             extracted = hub.documents.extract(temp_path)
+            provenance.add_extraction(evidence.evidence_id, extracted)
             proposal = proposal_from_extraction(book, uploaded.filename, extracted)
             hub.emit("document.extracted", {
+                "evidence_id": evidence.evidence_id,
+                "sha256": evidence.sha256,
                 "filename": uploaded.filename,
                 "vendor": proposal.vendor,
                 "amount": str(proposal.amount),
                 "work_order_id": proposal.work_order_id,
             })
-            return render_template("document_review.html", proposal=proposal, book=book)
+            return render_template("document_review.html", proposal=proposal, book=book, evidence=evidence)
         except (ValueError, KeyError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("dashboard"))
@@ -113,6 +134,13 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     @app.post("/documents/approve")
     def approve_document():
         def action():
+            evidence_id = request.form.get("evidence_id", "").strip()
+            if evidence_id not in provenance.documents:
+                raise ValueError("Unknown source document")
+            source = provenance.documents[evidence_id]
+            if source.approved_record_id:
+                raise ValueError("Source document is already bound to a bookkeeping record")
+
             record = record_approved_document(
                 book,
                 record_id=request.form.get("record_id", ""),
@@ -124,15 +152,18 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
                 treatment=request.form.get("treatment", "ask"),
                 linked_cost_id=request.form.get("linked_cost_id", "").strip() or None,
             )
+            record_type = "cost" if record.id in book.costs else "vendor_bill"
+            provenance.bind_record(evidence_id, record_type, record.id)
             hub.emit("document.approved", {
-                "record_type": "cost" if record.id in book.costs else "vendor_bill",
+                "evidence_id": evidence_id,
+                "record_type": record_type,
                 "record_id": record.id,
             })
             return record
 
         record = run(action)
         if record is not None:
-            flash("Document approved and recorded", "success")
+            flash("Document approved, recorded, and bound to source evidence", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/imports/work-orders/csv")
@@ -269,6 +300,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
 
     app.config["BOOKKEEPER"] = book
     app.config["BOOKKEEPER_DATA_PATH"] = str(path)
+    app.config["PROVENANCE"] = provenance
     return app
 
 
