@@ -51,7 +51,15 @@ def install_multi_connector_routes(app) -> None:
     @app.get("/sync-status")
     def sync_status():
         store = app.config["SYNC_RELIABILITY"]
-        return render_template("sync_status.html", runs=store.list_runs(), outbox=store.list_outbox())
+        schedules = app.config.get("PULL_SCHEDULES")
+        return render_template(
+            "sync_status.html",
+            runs=store.list_runs(),
+            outbox=store.list_outbox(),
+            schedules=schedules.list() if schedules else [],
+            auto_sync_enabled=bool(app.config.get("AUTO_SYNC_ENABLED")),
+            auto_sync_interval_seconds=int(app.config.get("AUTO_SYNC_INTERVAL_SECONDS") or 0),
+        )
 
     @app.post("/sync-status/outbox/<item_id>/retry")
     def retry_uncertain_outbox(item_id: str):
