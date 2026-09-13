@@ -7,6 +7,8 @@ from pathlib import Path
 
 from flask import render_template
 
+from connection_health import connection_health
+
 
 @dataclass(frozen=True)
 class ReadinessItem:
@@ -26,6 +28,7 @@ def build_readiness(app) -> list[ReadinessItem]:
     hub = app.config["CONNECTOR_HUB"]
     db_path = Path(app.config["BOOKKEEPER_DATA_PATH"])
     onboarding = app.config.get("ONBOARDING_STATE")
+    connection_store = app.config.get("CONNECTION_STORE")
 
     items: list[ReadinessItem] = []
 
@@ -45,6 +48,16 @@ def build_readiness(app) -> list[ReadinessItem]:
     else:
         items.append(ReadinessItem("Security", "missing", "Role permissions", "Permission bundles are missing.", True))
 
+    encryption_ready = bool(app.config.get("CREDENTIAL_ENCRYPTION_CONFIGURED"))
+    if encryption_ready:
+        items.append(ReadinessItem("Security", "ready", "Connector credential encryption", "Encrypted managed-connection storage is enabled."))
+    else:
+        production = bool(app.config.get("BOOKKEEPER_PRODUCTION"))
+        items.append(ReadinessItem(
+            "Security", "missing" if production else "warning", "Connector credential encryption",
+            "BOOKKEEPER_CREDENTIAL_KEY is not configured; in-app managed connections are disabled.", production,
+        ))
+
     try:
         workflow_count = len(workflows.rules())
     except Exception:
@@ -59,24 +72,43 @@ def build_readiness(app) -> list[ReadinessItem]:
         items.append(ReadinessItem("Controls", "missing", "Workflow controls", "No approval workflow rules are configured.", True))
 
     connector_specs = (
-        ("Field service", profile.field_service_system, hub.field_service),
-        ("Accounting", profile.accounting_system, hub.accounting),
-        ("Documents", profile.document_system, hub.documents),
+        ("Field service", profile.field_service_system, bool(hub.work_order_sources())),
+        ("Accounting", profile.accounting_system, bool(hub.payment_sources() or hub.deposit_sources() or hub.invoice_sinks())),
+        ("Documents", profile.document_system, hub.documents is not None),
     )
     for label, selected, live in connector_specs:
         selected = (selected or "none").strip()
         if selected == "none":
             items.append(ReadinessItem("Connections", "warning", label, "No external system selected; manual/CSV workflow remains available."))
-        elif live is not None:
-            items.append(ReadinessItem("Connections", "ready", label, f"{selected} is selected and a live adapter is loaded."))
+        elif live:
+            items.append(ReadinessItem("Connections", "ready", label, f"{selected} is selected and a live capability adapter is loaded."))
         else:
             items.append(ReadinessItem("Connections", "declared", label, f"{selected} is selected, but no live adapter is loaded yet."))
 
     bank_selected = (profile.bank_system or "none").strip()
-    if bank_selected == "none":
+    bank_live = bool(hub.deposit_sources())
+    if bank_selected == "none" and not bank_live:
         items.append(ReadinessItem("Connections", "warning", "Bank/payment feed", "No bank/payment connector selected; CSV/manual deposit entry remains available."))
+    elif bank_live:
+        items.append(ReadinessItem("Connections", "ready", "Bank/payment feed", "A live deposit/payment-source capability is loaded."))
     else:
-        items.append(ReadinessItem("Connections", "declared", "Bank/payment feed", f"{bank_selected} is declared; no dedicated bank connector is implemented yet."))
+        items.append(ReadinessItem("Connections", "declared", "Bank/payment feed", f"{bank_selected} is declared, but no live deposit-source adapter is loaded."))
+
+    if connection_store is not None:
+        for record in connection_store.list():
+            health = connection_health(connection_store, record.connection_id)
+            state = str(health.get("state") or "unknown")
+            detail = str(health.get("detail") or "")
+            identity = health.get("identity")
+            suffix = f" ({identity})" if identity else ""
+            title = f"{record.label} connection{suffix}"
+            if state in {"connected", "configured", "refresh_due"}:
+                status = "ready" if state != "refresh_due" else "warning"
+                items.append(ReadinessItem("Connections", status, title, detail))
+            elif state in {"authorization_required", "reauthorize_required", "expired", "error"}:
+                items.append(ReadinessItem("Connections", "missing", title, detail, True))
+            else:
+                items.append(ReadinessItem("Connections", "warning", title, detail))
 
     if db_path.exists():
         items.append(ReadinessItem("Storage", "ready", "SQLite database", f"Authoritative database is present at {db_path.name}."))
