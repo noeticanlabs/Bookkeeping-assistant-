@@ -31,6 +31,12 @@ class Cost:
     kind: str
     work_order_id: str | None = None
     reference: str | None = None
+    correction_of: str | None = None
+    superseded_by: str | None = None
+
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_by is None
 
 
 @dataclass
@@ -139,7 +145,29 @@ class Bookkeeper:
             raise ValueError("Duplicate cost ID")
         if cost.amount <= 0:
             raise ValueError("Cost amount must be greater than zero")
+        if cost.work_order_id and cost.work_order_id not in self.work_orders:
+            raise ValueError("Unknown work order")
+        if cost.correction_of and cost.correction_of not in self.costs:
+            raise ValueError("Correction references an unknown cost")
         self.costs[cost.id] = cost
+
+    def supersede_cost(self, original_cost_id: str, replacement: Cost) -> Cost:
+        if original_cost_id not in self.costs:
+            raise ValueError("Unknown cost")
+        original = self.costs[original_cost_id]
+        if original.superseded_by:
+            raise ValueError("Cost has already been superseded")
+        if replacement.id == original_cost_id:
+            raise ValueError("Replacement cost needs a new ID")
+        if replacement.correction_of and replacement.correction_of != original_cost_id:
+            raise ValueError("Replacement references the wrong original cost")
+        replacement.correction_of = original_cost_id
+        self.add_cost(replacement)
+        original.superseded_by = replacement.id
+        return replacement
+
+    def current_costs(self) -> list[Cost]:
+        return [cost for cost in self.costs.values() if cost.is_current]
 
     def add_vendor_bill(self, bill: VendorBill) -> None:
         if bill.id in self.vendor_bills:
@@ -228,6 +256,8 @@ class Bookkeeper:
         if work_order_id not in self.work_orders:
             raise ValueError("Unknown work order")
         cost = self.costs[cost_id]
+        if not cost.is_current:
+            raise ValueError("Cannot change a superseded cost")
         cost.work_order_id = work_order_id
         return cost
 
@@ -351,7 +381,10 @@ class Bookkeeper:
         return invoice
 
     def job_cost(self, work_order_id: str) -> Money:
-        return sum((c.amount for c in self.costs.values() if c.work_order_id == work_order_id), Decimal("0"))
+        return sum(
+            (c.amount for c in self.costs.values() if c.work_order_id == work_order_id and c.is_current),
+            Decimal("0"),
+        )
 
     def job_profit(self, work_order_id: str) -> Money | None:
         invoice = self.invoice_for(work_order_id)
@@ -384,7 +417,7 @@ class Bookkeeper:
             for message in result.issues:
                 kind = "unbilled_job" if result.invoice_id is None else "invoice_review"
                 issues.append(ReviewItem(kind, message, result.invoice_id or result.work_order_id))
-        for cost in self.costs.values():
+        for cost in self.current_costs():
             if cost.work_order_id and cost.work_order_id not in self.work_orders:
                 issues.append(ReviewItem("unknown_job", "Cost references an unknown work order", cost.id))
             elif cost.work_order_id is None:
