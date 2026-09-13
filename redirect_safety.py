@@ -9,6 +9,7 @@ from flask import request
 
 TRUSTED_OAUTH_REDIRECTS = {
     "xero_authorize": {"login.xero.com"},
+    "quickbooks_authorize": {"appcenter.intuit.com"},
 }
 
 
