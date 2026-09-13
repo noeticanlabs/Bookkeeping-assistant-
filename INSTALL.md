@@ -104,6 +104,19 @@ Open:
 http://127.0.0.1:5000
 ```
 
+### Optional automatic safe pulls
+
+Automatic synchronization is opt-in. It applies only to idempotent read capabilities such as work orders, payments, and deposits. It never background-retries outbound financial writes.
+
+```bash
+export BOOKKEEPER_AUTO_SYNC=1
+export BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS=900   # normal successful interval, minimum 60
+export BOOKKEEPER_SYNC_POLL_SECONDS=30             # scheduler wake-up interval, minimum 10
+python secure_web_app.py
+```
+
+Transient pull failures use durable exponential backoff starting at about 60 seconds, doubling on each consecutive failure and capping at one hour. A successful pull resets the failure counter and returns to the normal interval. The state survives application restarts because it is stored in SQLite.
+
 ### Optional OpenAI document extraction on Linux
 
 ```bash
@@ -170,6 +183,17 @@ Open:
 http://127.0.0.1:5000
 ```
 
+### Optional automatic safe pulls on Windows
+
+```powershell
+$env:BOOKKEEPER_AUTO_SYNC="1"
+$env:BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS="900"
+$env:BOOKKEEPER_SYNC_POLL_SECONDS="30"
+.\.venv\Scripts\python.exe secure_web_app.py
+```
+
+The same durable exponential-backoff rules apply as on Linux. Outbound invoice/accounting writes are intentionally excluded from the background scheduler.
+
 ### Optional OpenAI document extraction on Windows
 
 ```powershell
@@ -192,12 +216,19 @@ Supported managed providers currently include Xero, Stripe, QuickBooks Online, J
 
 Xero supports the standard OAuth authorization flow from inside the application. Configure the exact redirect URI in the Xero developer application; for local Xero testing use `localhost` rather than `127.0.0.1` where required by the provider.
 
+Synchronization health, recent attempts, durable safe-pull schedules, retry/backoff state, and conservative outbound delivery state are visible at:
+
+```text
+/sync-status
+```
+
 ## Application data
 
 By default the application creates its local data beside the configured data path. Important runtime data includes:
 
 - SQLite bookkeeping/configuration/audit database
 - encrypted managed-connection records
+- durable synchronization history, pull schedules, and outbound outbox state
 - uploaded source-document evidence vault
 - authenticated users and password hashes
 - workflow and approval policy
