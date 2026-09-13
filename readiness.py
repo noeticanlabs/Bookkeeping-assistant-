@@ -110,6 +110,35 @@ def build_readiness(app) -> list[ReadinessItem]:
             else:
                 items.append(ReadinessItem("Connections", "warning", title, detail))
 
+    sync = app.config.get("SYNC_RELIABILITY")
+    if sync is not None:
+        uncertain = [item for item in sync.list_outbox() if item.status == "uncertain"]
+        if uncertain:
+            items.append(ReadinessItem(
+                "Synchronization", "missing", "Uncertain outbound deliveries",
+                f"{len(uncertain)} outbound item(s) may already exist in a remote system. Verify them before retrying.", True,
+            ))
+        else:
+            items.append(ReadinessItem(
+                "Synchronization", "ready", "Outbound delivery state",
+                "No uncertain external writes are waiting for operator verification.",
+            ))
+
+        latest: dict[tuple[str, str], object] = {}
+        for run in sync.list_runs():
+            latest.setdefault((run.connector_id, run.capability), run)
+        failed_latest = [run for run in latest.values() if run.status == "failed"]
+        if failed_latest:
+            items.append(ReadinessItem(
+                "Synchronization", "warning", "Latest connector sync",
+                f"{len(failed_latest)} connector/capability sync(s) most recently failed. Review /sync-status before relying on automated data.",
+            ))
+        elif latest:
+            items.append(ReadinessItem(
+                "Synchronization", "ready", "Latest connector sync",
+                "The latest recorded sync for each exercised connector capability succeeded.",
+            ))
+
     if db_path.exists():
         items.append(ReadinessItem("Storage", "ready", "SQLite database", f"Authoritative database is present at {db_path.name}."))
     else:
