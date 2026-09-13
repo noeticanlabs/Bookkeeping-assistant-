@@ -15,6 +15,7 @@
     table { width:100%; border-collapse:collapse; margin-top:.75rem; }
     th, td { text-align:left; border-bottom:1px solid #eee; padding:.6rem; vertical-align:top; }
     .error { background:#ffecec; padding:.65rem; border-radius:6px; }
+    .success { background:#edf9ed; padding:.65rem; border-radius:6px; }
     .ready { font-weight:700; }
     small { opacity:.75; }
   </style>
@@ -34,7 +35,28 @@
     <div class="card"><small>Needs attention</small><div class="metric">{{ summary.needs_attention|length }}</div></div>
   </section>
 
-  <h2>Add completed work order</h2>
+  <h2>Bring in work orders</h2>
+  <div class="grid">
+    <div class="card">
+      <strong>CSV import</strong>
+      <p><small>Required columns: id, customer, description. Optional: status, quoted_total.</small></p>
+      <form method="post" action="/imports/work-orders/csv" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <button>Import work orders</button>
+      </form>
+    </div>
+    <div class="card">
+      <strong>Field-service connection</strong>
+      {% if field_service_connected %}
+        <p><small>A field-service connector is configured.</small></p>
+        <form method="post" action="/sync/field-service"><button>Sync work orders</button></form>
+      {% else %}
+        <p><small>No live connector configured yet. ServiceTitan, Jobber, Housecall Pro, or another adapter can use the same import path.</small></p>
+      {% endif %}
+    </div>
+  </div>
+
+  <h2>Add completed work order manually</h2>
   <form method="post" action="/work-orders">
     <input name="id" placeholder="WO-1002" required>
     <input name="customer" placeholder="Customer" required>
@@ -111,6 +133,6 @@
     <ul>{% for item in summary.needs_attention %}<li><strong>{{ item.kind }}</strong>: {{ item.reference_id }} — {{ item.message }}</li>{% endfor %}</ul>
   {% else %}<p>No current exceptions.</p>{% endif %}
 
-  <p><small>Advanced systems connect through connector hooks; this UI stays focused on the primary workflow.</small></p>
+  <p><small>All import sources normalize into the same WorkOrder model. Advanced connectors add transport, not new bookkeeping logic.</small></p>
 </body>
 </html>
