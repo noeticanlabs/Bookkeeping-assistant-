@@ -1,13 +1,15 @@
 """Small usable web app for the primary bookkeeping workflow."""
 
 import os
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from app import BankDeposit, Payment, WorkOrder
+from app import BankDeposit, Cost, Payment, VendorBill, WorkOrder
 from connectors import ConnectorHub
+from document_intake import proposal_from_extraction
 from imports import (
     import_deposits,
     import_deposits_csv,
@@ -53,6 +55,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             reviews=book.completed_job_invoice_reviews(),
             field_service_connected=hub.field_service is not None,
             accounting_connected=hub.accounting is not None,
+            document_connected=hub.documents is not None,
         )
 
     @app.post("/work-orders")
@@ -69,6 +72,95 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             book.add_work_order(wo)
             hub.emit("work_order.added", {"work_order_id": wo.id})
         run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/documents/extract")
+    def extract_document():
+        if not hub.documents:
+            flash("No document extraction connector is configured", "error")
+            return redirect(url_for("dashboard"))
+        uploaded = request.files.get("file")
+        if uploaded is None or not uploaded.filename:
+            flash("Choose a receipt or vendor invoice", "error")
+            return redirect(url_for("dashboard"))
+
+        suffix = Path(uploaded.filename).suffix
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp:
+                uploaded.save(temp)
+                temp_path = temp.name
+            extracted = hub.documents.extract(temp_path)
+            proposal = proposal_from_extraction(book, uploaded.filename, extracted)
+            hub.emit("document.extracted", {
+                "filename": uploaded.filename,
+                "vendor": proposal.vendor,
+                "amount": str(proposal.amount),
+                "work_order_id": proposal.work_order_id,
+            })
+            return render_template("document_review.html", proposal=proposal, book=book)
+        except (ValueError, KeyError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("dashboard"))
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    @app.post("/documents/approve")
+    def approve_document():
+        def action():
+            vendor = request.form["vendor"].strip()
+            amount = Decimal(request.form["amount"])
+            reference = request.form.get("reference", "").strip()
+            work_order_id = request.form.get("work_order_id", "").strip() or None
+            record_type = request.form.get("record_type", "vendor_bill")
+            treatment = request.form.get("treatment", "ask")
+            document_id = request.form.get("document_id", "").strip()
+            record_id = request.form.get("record_id", "").strip()
+            if not record_id:
+                raise ValueError("A record ID is required")
+            if work_order_id and work_order_id not in book.work_orders:
+                raise ValueError("Unknown work order")
+
+            if record_type == "cost":
+                cost = Cost(
+                    id=record_id,
+                    vendor=vendor,
+                    amount=amount,
+                    kind="document_cost",
+                    work_order_id=work_order_id,
+                    reference=reference or document_id or None,
+                )
+                book.add_cost(cost)
+                hub.emit("document.approved", {"record_type": "cost", "record_id": cost.id})
+                return
+
+            if record_type != "vendor_bill":
+                raise ValueError("Invalid document record type")
+
+            bill = VendorBill(
+                id=record_id,
+                vendor=vendor,
+                amount=amount,
+                work_order_id=work_order_id,
+            )
+            book.add_vendor_bill(bill)
+            if treatment != "ask":
+                linked_cost_id = request.form.get("linked_cost_id", "").strip() or None
+                book.treat_vendor_bill(bill.id, treatment=treatment, linked_cost_id=linked_cost_id)
+            hub.emit("document.approved", {
+                "record_type": "vendor_bill",
+                "record_id": bill.id,
+                "treatment": bill.treatment,
+            })
+
+        result = run(action)
+        if result is None and request.form.get("record_id") not in book.costs and request.form.get("record_id") not in book.vendor_bills:
+            return redirect(url_for("dashboard"))
+        flash("Document approved and recorded", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/imports/work-orders/csv")
