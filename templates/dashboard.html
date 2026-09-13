@@ -84,6 +84,19 @@
     </div>
   </div>
 
+  <h2>Read receipt or vendor invoice</h2>
+  <div class="card">
+    {% if document_connected %}
+      <p><small>The document reader extracts a proposal only. You review vendor, amount, job, and treatment before anything is recorded.</small></p>
+      <form method="post" action="/documents/extract" enctype="multipart/form-data">
+        <input type="file" name="file" accept="image/*,.pdf" required>
+        <button>Read document</button>
+      </form>
+    {% else %}
+      <p><small>No document-reading connector configured yet. A future OCR/AI adapter plugs into the existing DocumentConnector hook without changing bookkeeping logic.</small></p>
+    {% endif %}
+  </div>
+
   <h2>Add completed work order manually</h2>
   <form method="post" action="/work-orders">
     <input name="id" placeholder="WO-1002" required>
@@ -184,6 +197,6 @@
     <ul>{% for item in summary.needs_attention %}<li><strong>{{ item.kind }}</strong>: {{ item.reference_id }} — {{ item.message }}</li>{% endfor %}</ul>
   {% else %}<p>No current exceptions.</p>{% endif %}
 
-  <p><small>Imports only create evidence. Matching/posting remains an explicit bookkeeping action.</small></p>
+  <p><small>Imports and document extraction create evidence/proposals. Matching and posting remain explicit bookkeeping actions.</small></p>
 </body>
 </html>
