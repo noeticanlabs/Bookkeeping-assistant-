@@ -4,7 +4,10 @@ import os
 import secrets
 
 from auth_web import install_auth
+from connection_manager import ConnectionStore, CredentialCipher
+from connection_manager_web import install_connection_manager
 from csrf import install_csrf
+from managed_connectors import load_managed_connectors
 from multi_connector_web import install_multi_connector_routes
 from onboarding import install_onboarding
 from readiness import install_readiness
@@ -29,11 +32,19 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     _configure_session_secret(app)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
+
+    cipher = CredentialCipher.from_environment()
+    connection_store = ConnectionStore(db_path, cipher) if cipher is not None else None
+    app.config["CREDENTIAL_ENCRYPTION_CONFIGURED"] = cipher is not None
+    if connection_store is not None:
+        load_managed_connectors(app.config["CONNECTOR_HUB"], connection_store)
+
     install_csrf(app)
     install_redirect_safety(app)
     install_auth(app, db_path)
     install_separation_of_duties(app, db_path)
     install_multi_connector_routes(app)
+    install_connection_manager(app, connection_store)
     install_onboarding(app, db_path)
     install_readiness(app)
     return app
