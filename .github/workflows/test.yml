@@ -2,7 +2,7 @@ name: tests
 
 on:
   push:
-    branches: [kiss-fresh]
+    branches: [kiss-fresh, v0.1-hardening]
   pull_request:
 
 jobs:
