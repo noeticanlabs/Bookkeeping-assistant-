@@ -1,8 +1,4 @@
-"""Bookkeeper Assistant — KISS core.
-
-Connect field work to costs, invoices, payments, and accounting.
-External systems plug in through small adapters at the bottom of this file.
-"""
+"""Bookkeeper Assistant — KISS core."""
 
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -85,12 +81,27 @@ class Bookkeeper:
             raise ValueError("Cost amount must be greater than zero")
         self.costs[cost.id] = cost
 
+    def suggest_cost_match(self, cost_id: str) -> str | None:
+        """Suggest only when the cost reference explicitly contains one known WO id."""
+        cost = self.costs[cost_id]
+        if not cost.reference:
+            return None
+        reference = cost.reference.upper()
+        matches = [wo_id for wo_id in self.work_orders if wo_id.upper() in reference]
+        return matches[0] if len(matches) == 1 else None
+
     def match_cost(self, cost_id: str, work_order_id: str) -> Cost:
         if work_order_id not in self.work_orders:
             raise ValueError("Unknown work order")
         cost = self.costs[cost_id]
         cost.work_order_id = work_order_id
         return cost
+
+    def accept_cost_match(self, cost_id: str) -> Cost:
+        suggestion = self.suggest_cost_match(cost_id)
+        if suggestion is None:
+            raise ValueError("No unambiguous work order match")
+        return self.match_cost(cost_id, suggestion)
 
     def add_invoice(self, invoice: Invoice) -> None:
         self.invoices[invoice.id] = invoice
@@ -139,12 +150,9 @@ class Bookkeeper:
             if invoice.total <= 0:
                 issues.append("Invoice total must be greater than zero")
         ready = wo.status == "complete" and invoice is not None and not issues
-        return InvoiceReview(
-            wo.id, "ready" if ready else "needs_attention",
-            invoice.id if invoice else None, wo.quoted_total,
-            invoice.total if invoice else None, self.job_cost(wo.id),
-            self.job_profit(wo.id), issues,
-        )
+        return InvoiceReview(wo.id, "ready" if ready else "needs_attention", invoice.id if invoice else None,
+                             wo.quoted_total, invoice.total if invoice else None, self.job_cost(wo.id),
+                             self.job_profit(wo.id), issues)
 
     def completed_job_invoice_reviews(self) -> list[InvoiceReview]:
         return [self.review_invoice(wo.id) for wo in self.work_orders.values() if wo.status == "complete"]
@@ -159,7 +167,9 @@ class Bookkeeper:
             if cost.work_order_id and cost.work_order_id not in self.work_orders:
                 issues.append(ReviewItem("unknown_job", "Cost references an unknown work order", cost.id))
             elif cost.work_order_id is None:
-                issues.append(ReviewItem("unassigned_cost", "Cost is not assigned to a job or overhead", cost.id))
+                suggestion = self.suggest_cost_match(cost.id)
+                message = f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead"
+                issues.append(ReviewItem("unassigned_cost", message, cost.id))
         for payment in self.payments.values():
             if payment.invoice_id is None or payment.invoice_id not in self.invoices:
                 issues.append(ReviewItem("unmatched_payment", "Payment is not matched to an invoice", payment.id))
