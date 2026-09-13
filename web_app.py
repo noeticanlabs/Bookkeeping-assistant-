@@ -6,9 +6,16 @@ from pathlib import Path
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from app import BankDeposit, Bookkeeper, Payment, WorkOrder
+from app import BankDeposit, Payment, WorkOrder
 from connectors import ConnectorHub
-from imports import import_work_orders, import_work_orders_csv
+from imports import (
+    import_deposits,
+    import_deposits_csv,
+    import_payments,
+    import_payments_csv,
+    import_work_orders,
+    import_work_orders_csv,
+)
 from storage import load_bookkeeper, save_bookkeeper
 
 
@@ -31,6 +38,12 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             flash(str(exc), "error")
             return None
 
+    def report_import(label: str, result, event: str, source: str) -> None:
+        if result.errors:
+            flash("; ".join(result.errors), "error")
+        flash(f"{label}: added {result.added}; skipped {result.skipped} existing", "success")
+        hub.emit(event, {"source": source, "added": result.added, "skipped": result.skipped})
+
     @app.get("/")
     def dashboard():
         return render_template(
@@ -39,6 +52,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             summary=book.attention_summary(),
             reviews=book.completed_job_invoice_reviews(),
             field_service_connected=hub.field_service is not None,
+            accounting_connected=hub.accounting is not None,
         )
 
     @app.post("/work-orders")
@@ -63,12 +77,8 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             uploaded = request.files.get("file")
             if uploaded is None or not uploaded.filename:
                 raise ValueError("Choose a CSV file")
-            text = uploaded.read().decode("utf-8-sig")
-            result = import_work_orders_csv(book, text)
-            if result.errors:
-                flash("; ".join(result.errors), "error")
-            flash(f"Imported {result.added} work orders; skipped {result.skipped} existing", "success")
-            hub.emit("work_orders.imported", {"source": "csv", "added": result.added, "skipped": result.skipped})
+            result = import_work_orders_csv(book, uploaded.read().decode("utf-8-sig"))
+            report_import("Work orders", result, "work_orders.imported", "csv")
         run(action)
         return redirect(url_for("dashboard"))
 
@@ -78,10 +88,41 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             if not hub.field_service:
                 raise ValueError("No field-service connector is configured")
             result = import_work_orders(book, hub.field_service.pull_work_orders())
-            if result.errors:
-                flash("; ".join(result.errors), "error")
-            flash(f"Synced {result.added} work orders; skipped {result.skipped} existing", "success")
-            hub.emit("work_orders.imported", {"source": "field_service", "added": result.added, "skipped": result.skipped})
+            report_import("Work orders", result, "work_orders.imported", "field_service")
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/imports/payments/csv")
+    def import_payment_csv():
+        def action():
+            uploaded = request.files.get("file")
+            if uploaded is None or not uploaded.filename:
+                raise ValueError("Choose a payment CSV file")
+            result = import_payments_csv(book, uploaded.read().decode("utf-8-sig"))
+            report_import("Payments", result, "payments.imported", "csv")
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/imports/deposits/csv")
+    def import_deposit_csv():
+        def action():
+            uploaded = request.files.get("file")
+            if uploaded is None or not uploaded.filename:
+                raise ValueError("Choose a deposit CSV file")
+            result = import_deposits_csv(book, uploaded.read().decode("utf-8-sig"))
+            report_import("Deposits", result, "deposits.imported", "csv")
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/sync/accounting")
+    def sync_accounting():
+        def action():
+            if not hub.accounting:
+                raise ValueError("No accounting connector is configured")
+            payment_result = import_payments(book, hub.accounting.pull_payments())
+            deposit_result = import_deposits(book, hub.accounting.pull_deposits())
+            report_import("Payments", payment_result, "payments.imported", "accounting")
+            report_import("Deposits", deposit_result, "deposits.imported", "accounting")
         run(action)
         return redirect(url_for("dashboard"))
 
@@ -116,13 +157,18 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             invoice = book.invoices[invoice_id]
             if invoice.status == "draft":
                 raise ValueError("Issue the invoice before recording payment")
-            payment = Payment(
-                id=request.form["id"].strip(),
-                amount=Decimal(request.form["amount"]),
-            )
+            payment = Payment(id=request.form["id"].strip(), amount=Decimal(request.form["amount"]))
             book.add_payment(payment)
             book.match_payment(payment.id, invoice_id)
             hub.emit("payment.recorded", {"payment_id": payment.id, "invoice_id": invoice_id})
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/payments/<payment_id>/accept-suggestion")
+    def accept_payment_suggestion(payment_id: str):
+        def action():
+            payment = book.accept_payment_match(payment_id)
+            hub.emit("payment.matched", {"payment_id": payment.id, "invoice_id": payment.invoice_id})
         run(action)
         return redirect(url_for("dashboard"))
 
@@ -138,6 +184,14 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             book.add_deposit(deposit)
             book.match_deposit(deposit.id, payment_id)
             hub.emit("deposit.recorded", {"deposit_id": deposit.id, "payment_id": payment_id})
+        run(action)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/deposits/<deposit_id>/accept-suggestion")
+    def accept_deposit_suggestion(deposit_id: str):
+        def action():
+            deposit = book.accept_deposit_match(deposit_id)
+            hub.emit("deposit.matched", {"deposit_id": deposit.id, "payment_id": deposit.payment_id})
         run(action)
         return redirect(url_for("dashboard"))
 
