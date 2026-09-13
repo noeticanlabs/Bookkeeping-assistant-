@@ -301,3 +301,36 @@ def default_registry() -> VerifierRegistry:
     registry.register("V-VENDOR-BILL-TREATMENT", verify_vendor_bill_treatment)
     registry.register("V-JOB-MARGIN-CALC", verify_job_margins)
     return registry
+
+
+def blocking_invoice_failures(book, invoice_id: str, registry: VerifierRegistry | None = None) -> list[VerificationResult]:
+    """Return only deterministic FAIL results relevant to issuing one invoice.
+
+    This is deliberately narrow. Unrelated bank/processor failures do not block a
+    specific invoice export, while contradictions on the invoice, its work order,
+    or vendor bills/costs attached to that work order do.
+    """
+    invoice = book.invoices.get(invoice_id)
+    if invoice is None:
+        raise ValueError("Unknown invoice")
+    registry = registry or default_registry()
+    relevant: list[VerificationResult] = []
+    for result in registry.run(book):
+        if result.status != FAIL:
+            continue
+        if result.object_type == "invoice" and result.object_id == invoice.id:
+            relevant.append(result)
+            continue
+        if result.object_type == "work_order" and result.object_id == invoice.work_order_id:
+            relevant.append(result)
+            continue
+        if result.object_type == "vendor_bill":
+            bill = book.vendor_bills.get(result.object_id)
+            if bill is not None and bill.work_order_id == invoice.work_order_id:
+                relevant.append(result)
+            continue
+        if result.object_type == "cost":
+            cost = book.costs.get(result.object_id)
+            if cost is not None and cost.work_order_id == invoice.work_order_id:
+                relevant.append(result)
+    return relevant
