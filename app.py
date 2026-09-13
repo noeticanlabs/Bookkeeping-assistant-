@@ -274,6 +274,20 @@ class Bookkeeper:
                 issues.append(ReviewItem("deposit_difference", f"Deposit still differs by {self.deposit_difference(deposit.id)}", deposit.id))
         return issues
 
+    def attention_summary(self) -> dict[str, object]:
+        """Small owner/bookkeeper dashboard: what needs action right now."""
+        issues = self.review()
+        unpaid = [i for i in self.invoices.values() if i.payment_status != "paid"]
+        return {
+            "completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"),
+            "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"),
+            "unmatched_payments": sum(1 for i in issues if i.kind == "unmatched_payment"),
+            "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}),
+            "open_invoice_count": len(unpaid),
+            "open_invoice_balance": sum((i.balance_due for i in unpaid), Decimal("0")),
+            "needs_attention": issues,
+        }
+
 
 class FieldService(Protocol):
     def work_orders(self) -> list[WorkOrder]: ...
