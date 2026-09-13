@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from app import BankDeposit, Bookkeeper, Cost, Invoice, Payment, VendorBill, WorkOrder
 from business_intelligence import exception_queue
-from verifier_registry import FAIL, PASS, UNKNOWN, default_registry
+from verifier_registry import FAIL, PASS, UNKNOWN, blocking_invoice_failures, default_registry
 
 
 def _result(results, verifier_id, object_id):
@@ -105,3 +105,19 @@ def test_verifier_failures_enter_exception_queue_but_unknowns_do_not_become_fail
         item.kind == "verification_failed" and item.reference_id == "DEP-UNKNOWN"
         for item in items
     )
+
+
+def test_invoice_gate_blocks_relevant_failures_but_not_unrelated_bank_failure():
+    book = Bookkeeper()
+    book.add_work_order(WorkOrder("WO-1", "Smith", "Repair"))
+    book.add_invoice(Invoice("INV-1", "WO-1", "Smith", Decimal("1000"), status="draft"))
+    book.add_payment(Payment("PAY-INVOICE", Decimal("250"), "INV-1"))
+    book.invoices["INV-1"].amount_paid = Decimal("200")  # relevant invoice contradiction
+
+    book.add_payment(Payment("PAY-OTHER", Decimal("100")))
+    book.add_deposit(BankDeposit("DEP-OTHER", Decimal("90"), "PAY-OTHER", processor_fee=Decimal("3")))
+
+    failures = blocking_invoice_failures(book, "INV-1", default_registry())
+
+    assert any(result.verifier_id == "V-INVOICE-BALANCE" for result in failures)
+    assert not any(result.verifier_id == "V-PROCESSOR-SETTLEMENT" for result in failures)
