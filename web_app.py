@@ -11,6 +11,7 @@ from app import BankDeposit, Payment, WorkOrder
 from audit_log import AuditLog
 from connector_factory import default_connector_hub
 from connectors import ConnectorHub
+from corrections import CorrectionStore
 from document_intake import proposal_from_extraction, record_approved_document
 from imports import (
     import_deposits,
@@ -35,6 +36,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
         path.parent / f"{path.stem}-documents",
     )
     audit = AuditLog(path.with_name(f"{path.stem}-audit.jsonl"))
+    corrections = CorrectionStore(path.with_name(f"{path.stem}-corrections.json"))
 
     def save() -> None:
         save_bookkeeper(book, path)
@@ -67,6 +69,117 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             source_documents=provenance.documents.values(),
             audit_events=audit.events(),
         )
+
+    @app.get("/corrections")
+    def correction_dashboard():
+        return render_template(
+            "corrections.html",
+            book=book,
+            corrections=corrections.corrections.values(),
+        )
+
+    @app.post("/costs/<cost_id>/corrections")
+    def propose_cost_correction(cost_id: str):
+        def action():
+            correction = corrections.propose(
+                book,
+                original_cost_id=cost_id,
+                replacement_cost_id=request.form.get("replacement_cost_id", ""),
+                vendor=request.form.get("vendor", ""),
+                amount=Decimal(request.form["amount"]),
+                work_order_id=request.form.get("work_order_id", "").strip() or None,
+                reference=request.form.get("reference", "").strip() or None,
+                reason=request.form.get("reason", ""),
+                proposed_by=request.form.get("actor", ""),
+            )
+            source = provenance.source_for_record("cost", cost_id)
+            audit.append(
+                "cost.correction.proposed",
+                source.evidence_id if source else f"COST:{cost_id}",
+                {
+                    "correction_id": correction.correction_id,
+                    "original_cost_id": cost_id,
+                    "replacement_cost_id": correction.replacement_cost_id,
+                    "proposal": {
+                        "vendor": correction.proposed_vendor,
+                        "amount": correction.proposed_amount,
+                        "work_order_id": correction.proposed_work_order_id,
+                        "reference": correction.proposed_reference,
+                    },
+                    "reason": correction.reason,
+                },
+                actor=correction.proposed_by,
+            )
+            hub.emit("cost.correction.proposed", {"correction_id": correction.correction_id, "cost_id": cost_id})
+            return correction
+
+        correction = run(action)
+        if correction is not None:
+            flash("Cost correction proposed; original record is unchanged until approval", "success")
+        return redirect(url_for("correction_dashboard"))
+
+    @app.post("/corrections/<correction_id>/approve")
+    def approve_cost_correction(correction_id: str):
+        def action():
+            correction = corrections.corrections.get(correction_id)
+            if correction is None:
+                raise ValueError("Unknown correction")
+            original = book.costs[correction.original_cost_id]
+            original_snapshot = {
+                "id": original.id,
+                "vendor": original.vendor,
+                "amount": str(original.amount),
+                "work_order_id": original.work_order_id,
+                "reference": original.reference,
+            }
+            actor = request.form.get("actor", "").strip()
+            replacement = corrections.approve(book, correction_id, actor)
+            source = provenance.source_for_record("cost", original.id)
+            audit.append(
+                "cost.correction.approved",
+                source.evidence_id if source else f"COST:{original.id}",
+                {
+                    "correction_id": correction_id,
+                    "reason": correction.reason,
+                    "original": original_snapshot,
+                    "replacement": {
+                        "id": replacement.id,
+                        "vendor": replacement.vendor,
+                        "amount": str(replacement.amount),
+                        "work_order_id": replacement.work_order_id,
+                        "reference": replacement.reference,
+                        "correction_of": replacement.correction_of,
+                    },
+                    "superseded_record": original.id,
+                },
+                actor=actor,
+            )
+            hub.emit("cost.correction.approved", {"correction_id": correction_id, "replacement_cost_id": replacement.id})
+            return replacement
+
+        replacement = run(action)
+        if replacement is not None:
+            flash("Correction approved; original cost preserved and superseded", "success")
+        return redirect(url_for("correction_dashboard"))
+
+    @app.post("/corrections/<correction_id>/reject")
+    def reject_cost_correction(correction_id: str):
+        def action():
+            actor = request.form.get("actor", "").strip()
+            correction = corrections.reject(correction_id, actor)
+            source = provenance.source_for_record("cost", correction.original_cost_id)
+            audit.append(
+                "cost.correction.rejected",
+                source.evidence_id if source else f"COST:{correction.original_cost_id}",
+                {"correction_id": correction_id, "reason": correction.reason},
+                actor=actor,
+            )
+            return correction
+
+        correction = run(action)
+        if correction is not None:
+            flash("Correction rejected; original cost remains current", "success")
+        return redirect(url_for("correction_dashboard"))
 
     @app.post("/work-orders")
     def add_work_order():
@@ -355,6 +468,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     app.config["BOOKKEEPER_DATA_PATH"] = str(path)
     app.config["PROVENANCE"] = provenance
     app.config["AUDIT_LOG"] = audit
+    app.config["CORRECTIONS"] = corrections
     return app
 
 
