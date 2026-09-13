@@ -62,6 +62,7 @@ class BankDeposit:
     amount: Money
     payment_id: str | None = None
     reference: str | None = None
+    processor_fee: Money = Decimal("0")
 
 
 @dataclass
@@ -157,6 +158,8 @@ class Bookkeeper:
     def add_deposit(self, deposit: BankDeposit) -> None:
         if deposit.amount <= 0:
             raise ValueError("Deposit amount must be greater than zero")
+        if deposit.processor_fee < 0:
+            raise ValueError("Processor fee cannot be negative")
         self.deposits[deposit.id] = deposit
 
     def suggest_deposit_match(self, deposit_id: str) -> str | None:
@@ -186,13 +189,16 @@ class Bookkeeper:
         deposit = self.deposits[deposit_id]
         if not deposit.payment_id:
             return None
-        return deposit.amount - self.payments[deposit.payment_id].amount
+        payment = self.payments[deposit.payment_id]
+        return deposit.amount + deposit.processor_fee - payment.amount
 
     def deposit_status(self, deposit_id: str) -> str:
         deposit = self.deposits[deposit_id]
         if not deposit.payment_id:
             return "unmatched"
-        return "matched" if self.deposit_difference(deposit_id) == 0 else "difference"
+        if self.deposit_difference(deposit_id) == 0:
+            return "explained" if deposit.processor_fee > 0 else "matched"
+        return "difference"
 
     def invoice_for(self, work_order_id: str) -> Invoice | None:
         return next((i for i in self.invoices.values() if i.work_order_id == work_order_id), None)
@@ -265,7 +271,7 @@ class Bookkeeper:
                 message = f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a payment"
                 issues.append(ReviewItem("unmatched_deposit", message, deposit.id))
             elif status == "difference":
-                issues.append(ReviewItem("deposit_difference", f"Deposit differs from payment by {self.deposit_difference(deposit.id)}", deposit.id))
+                issues.append(ReviewItem("deposit_difference", f"Deposit still differs by {self.deposit_difference(deposit.id)}", deposit.id))
         return issues
 
 
