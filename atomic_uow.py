@@ -1,8 +1,8 @@
 """Atomic approval/finalization unit of work.
 
-The final approval is the transaction boundary. Approval recording, authoritative
-bookkeeping state, provenance/correction state, audit events, and request
-completion either commit together or roll back together.
+Approval-required and zero-approval finalization paths share the same transaction
+boundary. Financial state, provenance/correction state, audit history, and approval
+state either commit together or roll back together.
 """
 
 from __future__ import annotations
@@ -76,11 +76,111 @@ class AtomicApprovalUnitOfWork:
         self.corrections = corrections
         initialize(self.db_path)
 
+    def _snapshots(self):
+        return (
+            copy.deepcopy(self.book),
+            copy.deepcopy(self.provenance.documents),
+            copy.deepcopy(self.corrections.corrections),
+        )
+
+    def _restore(self, snapshots) -> None:
+        book_before, provenance_before, corrections_before = snapshots
+        _restore_book(self.book, book_before)
+        self.provenance.documents = provenance_before
+        self.corrections.corrections = corrections_before
+
+    def _finalize_document(self, conn: sqlite3.Connection, payload: dict[str, object],
+                           evidence_id: str, actor: str, *, request_id: str | None,
+                           approver_ids: list[str]) -> object:
+        if evidence_id not in self.provenance.documents:
+            raise ValueError("Unknown source document")
+        source = self.provenance.documents[evidence_id]
+        if source.approved_record_id:
+            raise ValueError("Source document is already bound to a bookkeeping record")
+        treatment = payload["treatment"]
+        if payload["record_type"] == "vendor_bill" and treatment == "ask" and self.book.vendor_bill_mode != "ask":
+            treatment = self.book.vendor_bill_mode
+        record = record_approved_document(
+            self.book, record_id=payload["record_id"], vendor=payload["vendor"],
+            amount=Decimal(payload["amount"]), reference=payload["reference"],
+            work_order_id=payload["work_order_id"], record_type=payload["record_type"],
+            treatment=treatment, linked_cost_id=payload["linked_cost_id"],
+        )
+        record_type = "cost" if record.id in self.book.costs else "vendor_bill"
+        source.approved_record_type = record_type
+        source.approved_record_id = record.id
+        conn.execute(
+            "UPDATE source_documents SET data=? WHERE evidence_id=?",
+            (_json(asdict(source)), evidence_id),
+        )
+        _persist_book(conn, self.book)
+        _audit_row(conn, "document.approved", evidence_id, {
+            "result": {"record_type": record_type, "record_id": record.id},
+            "approver_ids": approver_ids, "request_id": request_id,
+            "workflow_direct": request_id is None,
+        }, actor)
+        return record
+
+    def _finalize_correction(self, conn: sqlite3.Connection, correction_id: str,
+                             actor: str, *, approver_ids: list[str],
+                             workflow_direct: bool) -> Cost:
+        if correction_id not in self.corrections.corrections:
+            raise ValueError("Unknown correction")
+        correction = self.corrections.corrections[correction_id]
+        if correction.status != "pending":
+            raise ValueError("Correction is no longer pending")
+        original = self.book.costs[correction.original_cost_id]
+        replacement = Cost(
+            id=correction.replacement_cost_id,
+            vendor=correction.proposed_vendor,
+            amount=Decimal(correction.proposed_amount),
+            kind=original.kind,
+            work_order_id=correction.proposed_work_order_id,
+            reference=correction.proposed_reference,
+            correction_of=original.id,
+        )
+        self.book.supersede_cost(original.id, replacement)
+        correction.status = "approved"
+        correction.approved_by = actor
+        correction.approved_at = datetime.now(timezone.utc).isoformat()
+        _persist_book(conn, self.book)
+        _persist_corrections(conn, self.corrections)
+        _audit_row(conn, "cost.correction.finalized", f"CORRECTION:{correction_id}", {
+            "replacement_cost_id": replacement.id,
+            "approver_ids": approver_ids,
+            "workflow_direct": workflow_direct,
+        }, actor)
+        return replacement
+
+    def finalize_direct_document(self, payload: dict[str, object], evidence_id: str, actor: str):
+        """Atomically post a zero-approval document workflow."""
+        snapshots = self._snapshots()
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                return self._finalize_document(
+                    conn, payload, evidence_id, actor, request_id=None, approver_ids=[]
+                )
+        except Exception:
+            self._restore(snapshots)
+            raise
+
+    def finalize_direct_correction(self, correction_id: str, actor: str) -> Cost:
+        """Atomically finalize a zero-approval correction workflow."""
+        snapshots = self._snapshots()
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                return self._finalize_correction(
+                    conn, correction_id, actor, approver_ids=[], workflow_direct=True
+                )
+        except Exception:
+            self._restore(snapshots)
+            raise
+
     def approve(self, request_id: str, user_id: str, actor: str) -> tuple[int, int, bool]:
         """Record one approval and atomically finalize if it satisfies the request."""
-        book_before = copy.deepcopy(self.book)
-        provenance_before = copy.deepcopy(self.provenance.documents)
-        corrections_before = copy.deepcopy(self.corrections.corrections)
+        snapshots = self._snapshots()
 
         try:
             with _connect(self.db_path) as conn:
@@ -128,61 +228,15 @@ class AtomicApprovalUnitOfWork:
                 ).fetchall()]
 
                 if subject_type == "document":
-                    evidence_id = subject_id
-                    if evidence_id not in self.provenance.documents:
-                        raise ValueError("Unknown source document")
-                    source = self.provenance.documents[evidence_id]
-                    if source.approved_record_id:
-                        raise ValueError("Source document is already bound to a bookkeeping record")
-                    treatment = payload["treatment"]
-                    if payload["record_type"] == "vendor_bill" and treatment == "ask" and self.book.vendor_bill_mode != "ask":
-                        treatment = self.book.vendor_bill_mode
-                    record = record_approved_document(
-                        self.book, record_id=payload["record_id"], vendor=payload["vendor"],
-                        amount=Decimal(payload["amount"]), reference=payload["reference"],
-                        work_order_id=payload["work_order_id"], record_type=payload["record_type"],
-                        treatment=treatment, linked_cost_id=payload["linked_cost_id"],
+                    self._finalize_document(
+                        conn, payload, subject_id, actor,
+                        request_id=request_id, approver_ids=approver_ids,
                     )
-                    record_type = "cost" if record.id in self.book.costs else "vendor_bill"
-                    source.approved_record_type = record_type
-                    source.approved_record_id = record.id
-                    conn.execute(
-                        "UPDATE source_documents SET data=? WHERE evidence_id=?",
-                        (_json(asdict(source)), evidence_id),
-                    )
-                    _persist_book(conn, self.book)
-                    _audit_row(conn, "document.approved", evidence_id, {
-                        "result": {"record_type": record_type, "record_id": record.id},
-                        "approver_ids": approver_ids, "request_id": request_id,
-                        "workflow_direct": False,
-                    }, actor)
-
                 elif subject_type == "cost_correction":
-                    if subject_id not in self.corrections.corrections:
-                        raise ValueError("Unknown correction")
-                    correction = self.corrections.corrections[subject_id]
-                    if correction.status != "pending":
-                        raise ValueError("Correction is no longer pending")
-                    original = self.book.costs[correction.original_cost_id]
-                    replacement = Cost(
-                        id=correction.replacement_cost_id,
-                        vendor=correction.proposed_vendor,
-                        amount=Decimal(correction.proposed_amount),
-                        kind=original.kind,
-                        work_order_id=correction.proposed_work_order_id,
-                        reference=correction.proposed_reference,
-                        correction_of=original.id,
+                    self._finalize_correction(
+                        conn, subject_id, actor,
+                        approver_ids=approver_ids, workflow_direct=False,
                     )
-                    self.book.supersede_cost(original.id, replacement)
-                    correction.status = "approved"
-                    correction.approved_by = actor
-                    correction.approved_at = datetime.now(timezone.utc).isoformat()
-                    _persist_book(conn, self.book)
-                    _persist_corrections(conn, self.corrections)
-                    _audit_row(conn, "cost.correction.finalized", f"CORRECTION:{subject_id}", {
-                        "replacement_cost_id": replacement.id,
-                        "approver_ids": approver_ids,
-                    }, actor)
                 else:
                     raise ValueError("Unsupported approval subject")
 
@@ -194,7 +248,5 @@ class AtomicApprovalUnitOfWork:
                     raise ValueError("Approval request is no longer pending")
                 return count, required, True
         except Exception:
-            _restore_book(self.book, book_before)
-            self.provenance.documents = provenance_before
-            self.corrections.corrections = corrections_before
+            self._restore(snapshots)
             raise
