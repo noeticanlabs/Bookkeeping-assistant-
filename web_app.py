@@ -9,6 +9,7 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 
 from app import BankDeposit, Payment, WorkOrder
 from audit_log import AuditLog
+from company_config import CompanyConfigStore
 from connector_factory import default_connector_hub
 from connectors import ConnectorHub
 from corrections import CorrectionStore
@@ -31,6 +32,8 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     path = Path(data_path or os.environ.get("BOOKKEEPER_DATA", "bookkeeper-data.json"))
     hub = connectors if connectors is not None else default_connector_hub()
     book = load_bookkeeper(path)
+    company = CompanyConfigStore(path.with_name(f"{path.stem}-company.json"))
+    book.vendor_bill_mode = company.profile.vendor_bill_mode
     provenance = ProvenanceStore(
         path.with_name(f"{path.stem}-provenance.json"),
         path.parent / f"{path.stem}-documents",
@@ -61,6 +64,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
         return render_template(
             "dashboard.html",
             book=book,
+            profile=company.profile,
             summary=book.attention_summary(),
             reviews=book.completed_job_invoice_reviews(),
             field_service_connected=hub.field_service is not None,
@@ -69,6 +73,49 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
             source_documents=provenance.documents.values(),
             audit_events=audit.events(),
         )
+
+    @app.get("/settings/company")
+    def company_settings():
+        return render_template("company_settings.html", profile=company.profile)
+
+    @app.post("/settings/company")
+    def update_company_settings():
+        try:
+            profile = company.update_from_strings(
+                name=request.form.get("name", ""),
+                job_label=request.form.get("job_label", ""),
+                customer_label=request.form.get("customer_label", ""),
+                vendor_bill_mode=request.form.get("vendor_bill_mode", "ask"),
+                approval_threshold=request.form.get("approval_threshold", ""),
+                approver_roles=request.form.get("approver_roles", ""),
+                field_service_system=request.form.get("field_service_system", "none"),
+                accounting_system=request.form.get("accounting_system", "none"),
+                bank_system=request.form.get("bank_system", "none"),
+                document_system=request.form.get("document_system", "none"),
+            )
+            book.vendor_bill_mode = profile.vendor_bill_mode
+            save()
+            audit.append(
+                "company.configuration.updated",
+                "COMPANY",
+                {
+                    "company": profile.name,
+                    "job_label": profile.job_label,
+                    "customer_label": profile.customer_label,
+                    "vendor_bill_mode": profile.vendor_bill_mode,
+                    "approval_threshold": str(profile.approval_threshold) if profile.approval_threshold is not None else None,
+                    "approver_roles": list(profile.approver_roles),
+                    "field_service_system": profile.field_service_system,
+                    "accounting_system": profile.accounting_system,
+                    "bank_system": profile.bank_system,
+                    "document_system": profile.document_system,
+                },
+                actor="administrator",
+            )
+            flash("Company configuration saved", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("company_settings"))
 
     @app.get("/corrections")
     def correction_dashboard():
@@ -296,6 +343,11 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
                 if str(proposed.get(key) or "") != str(approved.get(key) or "")
             }
 
+            treatment = approved["treatment"]
+            if approved["record_type"] == "vendor_bill" and treatment == "ask" and book.vendor_bill_mode != "ask":
+                treatment = book.vendor_bill_mode
+                approved["treatment"] = treatment
+
             record = record_approved_document(
                 book,
                 record_id=approved["record_id"],
@@ -304,7 +356,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
                 reference=approved["reference"],
                 work_order_id=approved["work_order_id"],
                 record_type=approved["record_type"],
-                treatment=approved["treatment"],
+                treatment=treatment,
                 linked_cost_id=approved["linked_cost_id"],
             )
             record_type = "cost" if record.id in book.costs else "vendor_bill"
@@ -317,6 +369,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
                     "approved": approved,
                     "changes": changes,
                     "result": {"record_type": record_type, "record_id": record.id},
+                    "extra_approval_required": company.profile.requires_extra_approval(Decimal(approved["amount"])),
                 },
                 actor=request.form.get("actor", "user").strip() or "user",
             )
@@ -466,6 +519,7 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
 
     app.config["BOOKKEEPER"] = book
     app.config["BOOKKEEPER_DATA_PATH"] = str(path)
+    app.config["COMPANY_CONFIG"] = company
     app.config["PROVENANCE"] = provenance
     app.config["AUDIT_LOG"] = audit
     app.config["CORRECTIONS"] = corrections
