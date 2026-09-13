@@ -149,6 +149,19 @@ class Bookkeeper:
             "open_bills": open_bills,
         }
 
+    def near_term_position(self) -> dict[str, Money]:
+        """Operational snapshot only: open AR minus open AP. Not a cash forecast."""
+        receivables = sum(
+            (i.balance_due for i in self.invoices.values() if i.payment_status != "paid"),
+            Decimal("0"),
+        )
+        payables = self.accounts_payable_summary()["open_bill_balance"]
+        return {
+            "expected_in": receivables,
+            "owed_out": payables,
+            "net_position": receivables - payables,
+        }
+
     def suggest_cost_match(self, cost_id: str) -> str | None:
         cost = self.costs[cost_id]
         if not cost.reference:
@@ -327,15 +340,17 @@ class Bookkeeper:
         issues = self.review()
         unpaid = [i for i in self.invoices.values() if i.payment_status != "paid"]
         ap = self.accounts_payable_summary()
+        position = self.near_term_position()
         return {
             "completed_unbilled": sum(1 for i in issues if i.kind == "unbilled_job"),
             "unassigned_costs": sum(1 for i in issues if i.kind == "unassigned_cost"),
             "unmatched_payments": sum(1 for i in issues if i.kind == "unmatched_payment"),
             "bank_issues": sum(1 for i in issues if i.kind in {"unmatched_deposit", "deposit_difference"}),
             "open_invoice_count": len(unpaid),
-            "open_invoice_balance": sum((i.balance_due for i in unpaid), Decimal("0")),
+            "open_invoice_balance": position["expected_in"],
             "open_bill_count": ap["open_bill_count"],
-            "open_bill_balance": ap["open_bill_balance"],
+            "open_bill_balance": position["owed_out"],
+            "near_term_net_position": position["net_position"],
             "needs_attention": issues,
         }
 
