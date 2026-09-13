@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Company Settings — Bookkeeper Assistant</title>
+  <style>
+    body { font-family:system-ui,sans-serif; max-width:900px; margin:2rem auto; padding:0 1rem; }
+    form { display:grid; gap:1rem; }
+    label { display:grid; gap:.35rem; font-weight:600; }
+    input, select, button { padding:.65rem; font:inherit; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; }
+    .card { border:1px solid #ddd; border-radius:10px; padding:1rem; }
+    small { font-weight:400; opacity:.75; }
+  </style>
+</head>
+<body>
+  <p><a href="/">← Back to dashboard</a></p>
+  <h1>Company configuration</h1>
+  <p>Tailor terminology, business policy, and integration targets without changing the bookkeeping core.</p>
+
+  <form method="post" action="/settings/company">
+    <div class="grid">
+      <div class="card">
+        <h2>Company</h2>
+        <label>Company name
+          <input name="name" value="{{ profile.name }}" required>
+        </label>
+        <label>What do you call jobs?
+          <input name="job_label" value="{{ profile.job_label }}" placeholder="Work Order, Job, Project, Service Call" required>
+        </label>
+        <label>What do you call customers?
+          <input name="customer_label" value="{{ profile.customer_label }}" required>
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>Bookkeeping policy</h2>
+        <label>Vendor bills
+          <select name="vendor_bill_mode">
+            <option value="ask" {% if profile.vendor_bill_mode == 'ask' %}selected{% endif %}>Ask each time</option>
+            <option value="create_cost" {% if profile.vendor_bill_mode == 'create_cost' %}selected{% endif %}>Create job cost</option>
+            <option value="support_cost" {% if profile.vendor_bill_mode == 'support_cost' %}selected{% endif %}>Support existing cost</option>
+          </select>
+        </label>
+        <label>Extra approval threshold
+          <input name="approval_threshold" value="{{ profile.approval_threshold or '' }}" placeholder="5000.00">
+          <small>Stored as policy now; role-based enforcement comes with user authentication.</small>
+        </label>
+        <label>Approver roles
+          <input name="approver_roles" value="{{ profile.approver_roles|join(', ') }}" placeholder="Owner, Bookkeeper, Manager">
+        </label>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Integration targets</h2>
+        <label>Field-service system
+          <input name="field_service_system" value="{{ profile.field_service_system }}" placeholder="ServiceTitan, Jobber, Housecall Pro, CSV">
+        </label>
+        <label>Accounting system
+          <input name="accounting_system" value="{{ profile.accounting_system }}" placeholder="QuickBooks, Xero, Other">
+        </label>
+        <label>Bank / payment source
+          <input name="bank_system" value="{{ profile.bank_system }}" placeholder="Bank feed, Stripe, Square, CSV">
+        </label>
+        <label>Document reader
+          <input name="document_system" value="{{ profile.document_system }}" placeholder="OpenAI, other provider, none">
+        </label>
+        <small>These values describe the company setup. A connector becomes live only when its adapter is configured.</small>
+      </div>
+    </div>
+
+    <button>Save company configuration</button>
+  </form>
+</body>
+</html>
