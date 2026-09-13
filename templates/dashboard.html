@@ -39,7 +39,7 @@
   <div class="grid">
     <div class="card">
       <strong>CSV import</strong>
-      <p><small>Required columns: id, customer, description. Optional: status, quoted_total.</small></p>
+      <p><small>Required: id, customer, description. Optional: status, quoted_total.</small></p>
       <form method="post" action="/imports/work-orders/csv" enctype="multipart/form-data">
         <input type="file" name="file" accept=".csv,text/csv" required>
         <button>Import work orders</button>
@@ -48,10 +48,38 @@
     <div class="card">
       <strong>Field-service connection</strong>
       {% if field_service_connected %}
-        <p><small>A field-service connector is configured.</small></p>
         <form method="post" action="/sync/field-service"><button>Sync work orders</button></form>
       {% else %}
-        <p><small>No live connector configured yet. ServiceTitan, Jobber, Housecall Pro, or another adapter can use the same import path.</small></p>
+        <p><small>No live field-service connector configured.</small></p>
+      {% endif %}
+    </div>
+  </div>
+
+  <h2>Bring in financial activity</h2>
+  <div class="grid">
+    <div class="card">
+      <strong>Payment CSV</strong>
+      <p><small>Required: id, amount. Optional: reference. Put an invoice ID in reference for an exact suggestion.</small></p>
+      <form method="post" action="/imports/payments/csv" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <button>Import payments</button>
+      </form>
+    </div>
+    <div class="card">
+      <strong>Deposit CSV</strong>
+      <p><small>Required: id, amount. Optional: reference, processor_fee. Put a payment ID in reference for an exact suggestion.</small></p>
+      <form method="post" action="/imports/deposits/csv" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <button>Import deposits</button>
+      </form>
+    </div>
+    <div class="card">
+      <strong>Accounting connection</strong>
+      {% if accounting_connected %}
+        <p><small>Imports payments and deposits as unmatched evidence.</small></p>
+        <form method="post" action="/sync/accounting"><button>Sync accounting</button></form>
+      {% else %}
+        <p><small>No live accounting connector configured yet.</small></p>
       {% endif %}
     </div>
   </div>
@@ -76,9 +104,7 @@
         <td>{{ wo.id }}</td>
         <td>{{ wo.customer }}<br><small>{{ wo.description }}</small></td>
         <td>${{ book.job_cost(wo.id) }}</td>
-        <td>
-          {% if inv %}{{ inv.id }} — ${{ inv.total }} — {{ inv.status }} — {{ inv.payment_status }}{% else %}None{% endif %}
-        </td>
+        <td>{% if inv %}{{ inv.id }} — ${{ inv.total }} — {{ inv.status }} — {{ inv.payment_status }}{% else %}None{% endif %}</td>
         <td>
           {% if not inv %}
             <form method="post" action="/work-orders/{{ wo.id }}/invoice">
@@ -87,15 +113,30 @@
             </form>
           {% elif inv.status == 'draft' %}
             <form method="post" action="/invoices/{{ inv.id }}/issue"><button>Issue invoice</button></form>
-          {% else %}
-            <span class="ready">Issued</span>
-          {% endif %}
+          {% else %}<span class="ready">Issued</span>{% endif %}
         </td>
       </tr>
     {% endfor %}
   </table>
 
-  <h2>Record customer payment</h2>
+  <h2>Imported / unmatched payments</h2>
+  <table>
+    <tr><th>Payment</th><th>Amount</th><th>Reference</th><th>Invoice</th><th>Action</th></tr>
+    {% for p in book.payments.values() %}
+      {% set suggestion = book.suggest_payment_match(p.id) if not p.invoice_id else none %}
+      <tr>
+        <td>{{ p.id }}</td><td>${{ p.amount }}</td><td>{{ p.reference or '—' }}</td><td>{{ p.invoice_id or '—' }}</td>
+        <td>
+          {% if not p.invoice_id and suggestion %}
+            Suggested: {{ suggestion }}
+            <form method="post" action="/payments/{{ p.id }}/accept-suggestion"><button>Accept match</button></form>
+          {% elif not p.invoice_id %}Needs review{% else %}Matched{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Record customer payment manually</h2>
   <form method="post" action="/payments">
     <input name="id" placeholder="PAY-1001" required>
     <select name="invoice_id" required>
@@ -108,7 +149,25 @@
     <button>Record payment</button>
   </form>
 
-  <h2>Record bank deposit</h2>
+  <h2>Bank reconciliation</h2>
+  <table>
+    <tr><th>Deposit</th><th>Amount</th><th>Reference / Payment</th><th>Fee</th><th>Status / Action</th></tr>
+    {% for dep in book.deposits.values() %}
+      {% set suggestion = book.suggest_deposit_match(dep.id) if not dep.payment_id else none %}
+      <tr>
+        <td>{{ dep.id }}</td><td>${{ dep.amount }}</td>
+        <td>{{ dep.reference or dep.payment_id or '—' }}</td><td>${{ dep.processor_fee }}</td>
+        <td>
+          {% if not dep.payment_id and suggestion %}
+            Suggested: {{ suggestion }}
+            <form method="post" action="/deposits/{{ dep.id }}/accept-suggestion"><button>Accept match</button></form>
+          {% else %}{{ book.deposit_status(dep.id) }}{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Record bank deposit manually</h2>
   <form method="post" action="/deposits">
     <input name="id" placeholder="DEP-1001" required>
     <select name="payment_id" required>
@@ -120,19 +179,11 @@
     <button>Reconcile deposit</button>
   </form>
 
-  <h2>Bank reconciliation</h2>
-  <table>
-    <tr><th>Deposit</th><th>Amount</th><th>Payment</th><th>Fee</th><th>Status</th></tr>
-    {% for dep in book.deposits.values() %}
-      <tr><td>{{ dep.id }}</td><td>${{ dep.amount }}</td><td>{{ dep.payment_id or '—' }}</td><td>${{ dep.processor_fee }}</td><td>{{ book.deposit_status(dep.id) }}</td></tr>
-    {% endfor %}
-  </table>
-
   <h2>Needs attention</h2>
   {% if summary.needs_attention %}
     <ul>{% for item in summary.needs_attention %}<li><strong>{{ item.kind }}</strong>: {{ item.reference_id }} — {{ item.message }}</li>{% endfor %}</ul>
   {% else %}<p>No current exceptions.</p>{% endif %}
 
-  <p><small>All import sources normalize into the same WorkOrder model. Advanced connectors add transport, not new bookkeeping logic.</small></p>
+  <p><small>Imports only create evidence. Matching/posting remains an explicit bookkeeping action.</small></p>
 </body>
 </html>
