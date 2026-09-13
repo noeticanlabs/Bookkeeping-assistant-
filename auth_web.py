@@ -1,4 +1,4 @@
-"""Authentication and authorization layer for the existing Flask bookkeeping app."""
+"""Authentication and fine-grained authorization for the Flask bookkeeping app."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from functools import wraps
 
 from flask import flash, g, redirect, render_template, request, session, url_for
 
-from auth import UserStore, is_admin, is_approver
+from auth import UserStore
 from document_intake import record_approved_document
+from permissions import PERMISSIONS, PermissionStore
 
 
 PUBLIC_ENDPOINTS = {"login", "logout", "setup_admin", "static"}
@@ -16,13 +17,22 @@ PUBLIC_ENDPOINTS = {"login", "logout", "setup_admin", "static"}
 
 def install_auth(app, db_path) -> UserStore:
     users = UserStore(db_path)
+    permissions = PermissionStore(db_path)
     app.config["USER_STORE"] = users
+    app.config["PERMISSION_STORE"] = permissions
 
     def current_user():
         return users.get(session.get("user_id"))
 
     def audit_identity(user) -> str:
         return f"{user.display_name} [{user.username}] ({user.role})"
+
+    def has(permission: str) -> bool:
+        return permissions.user_has(current_user(), permission)
+
+    def deny(message: str = "You do not have permission for this action"):
+        flash(message, "error")
+        return redirect(url_for("dashboard"))
 
     @app.before_request
     def require_authentication():
@@ -33,11 +43,18 @@ def install_auth(app, db_path) -> UserStore:
             return redirect(url_for("setup_admin"))
         if g.current_user is None:
             return redirect(url_for("login", next=request.path))
+        if request.endpoint not in {"user_settings", "role_permissions", "update_role_permissions", "company_settings"}:
+            if not permissions.user_has(g.current_user, "records.read"):
+                return deny("Your role does not allow access to bookkeeping records")
         return None
 
     @app.context_processor
     def auth_context():
-        return {"current_user": getattr(g, "current_user", None)}
+        user = getattr(g, "current_user", None)
+        return {
+            "current_user": user,
+            "has_permission": lambda name: permissions.user_has(user, name),
+        }
 
     @app.route("/setup", methods=["GET", "POST"])
     def setup_admin():
@@ -93,9 +110,8 @@ def install_auth(app, db_path) -> UserStore:
     @app.route("/settings/users", methods=["GET", "POST"])
     def user_settings():
         user = current_user()
-        if not is_admin(user):
-            flash("Administrator role required", "error")
-            return redirect(url_for("dashboard"))
+        if not permissions.user_has(user, "users.manage"):
+            return deny("User-management permission required")
         if request.method == "POST":
             try:
                 created = users.create_user(
@@ -112,35 +128,82 @@ def install_auth(app, db_path) -> UserStore:
                 flash("User created", "success")
             except ValueError as exc:
                 flash(str(exc), "error")
+        return render_template("user_settings.html", users=users.list_users(), roles=permissions.roles())
+
+    @app.get("/settings/permissions")
+    def role_permissions():
+        user = current_user()
+        if not permissions.user_has(user, "users.manage"):
+            return deny("User-management permission required")
         return render_template(
-            "user_settings.html",
-            users=users.list_users(),
-            approver_roles=app.config["COMPANY_CONFIG"].profile.approver_roles,
+            "role_permissions.html",
+            roles=permissions.roles(),
+            all_permissions=PERMISSIONS,
         )
 
-    # Replace sensitive handlers so identity comes from the authenticated session.
+    @app.post("/settings/permissions/<role>")
+    def update_role_permissions(role: str):
+        user = current_user()
+        if not permissions.user_has(user, "users.manage"):
+            return deny("User-management permission required")
+        try:
+            selected = {p for p in request.form.getlist("permissions") if p in PERMISSIONS}
+            before = sorted(permissions.permissions_for_role(role))
+            permissions.set_role_permissions(role, selected)
+            app.config["AUDIT_LOG"].append(
+                "role.permissions.updated", "SECURITY",
+                {"role": role, "before": before, "after": sorted(selected)},
+                actor=audit_identity(user),
+            )
+            flash(f"Permissions updated for {role}", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("role_permissions"))
+
+    # Company configuration is governed by an explicit permission.
     original_company_settings = app.view_functions["update_company_settings"]
 
     @wraps(original_company_settings)
     def secured_company_settings(*args, **kwargs):
-        user = current_user()
-        if not is_admin(user):
-            flash("Administrator role required", "error")
-            return redirect(url_for("company_settings"))
+        if not has("company.configure"):
+            return deny("Company-configuration permission required")
         return original_company_settings(*args, **kwargs)
 
     app.view_functions["update_company_settings"] = secured_company_settings
 
+    # Generic bookkeeping writes all require bookkeeping.write.
+    write_endpoints = {
+        "add_work_order", "import_work_order_csv", "sync_field_service",
+        "import_payment_csv", "import_deposit_csv", "sync_accounting",
+        "prepare_invoice", "issue_invoice", "add_payment", "accept_payment_suggestion",
+        "add_deposit", "accept_deposit_suggestion", "seed_demo", "extract_document",
+    }
+    for endpoint in write_endpoints:
+        if endpoint not in app.view_functions:
+            continue
+        original = app.view_functions[endpoint]
+
+        def make_guard(view):
+            @wraps(view)
+            def guarded(*args, **kwargs):
+                if not has("bookkeeping.write"):
+                    return deny("Bookkeeping-write permission required")
+                return view(*args, **kwargs)
+            return guarded
+
+        app.view_functions[endpoint] = make_guard(original)
+
     def secured_approve_document():
         user = current_user()
+        if not permissions.user_has(user, "documents.approve"):
+            return deny("Document-approval permission required")
         book = app.config["BOOKKEEPER"]
         company = app.config["COMPANY_CONFIG"]
         provenance = app.config["PROVENANCE"]
         audit = app.config["AUDIT_LOG"]
         amount = Decimal(request.form.get("amount", "0"))
-        if company.profile.requires_extra_approval(amount) and not is_approver(user, company.profile.approver_roles):
-            flash("This amount requires an authorized approver", "error")
-            return redirect(url_for("dashboard"))
+        if company.profile.requires_extra_approval(amount) and not permissions.user_has(user, "corrections.approve"):
+            return deny("This amount requires elevated approval permission")
         try:
             evidence_id = request.form.get("evidence_id", "").strip()
             if evidence_id not in provenance.documents:
@@ -204,9 +267,10 @@ def install_auth(app, db_path) -> UserStore:
 
     @wraps(original_propose)
     def secured_propose(cost_id, *args, **kwargs):
-        # Bookkeepers may propose; actor identity is additionally captured in auth audit.
-        result = original_propose(cost_id, *args, **kwargs)
         user = current_user()
+        if not permissions.user_has(user, "corrections.propose"):
+            return deny("Correction-proposal permission required")
+        result = original_propose(cost_id, *args, **kwargs)
         app.config["AUDIT_LOG"].append(
             "cost.correction.proposer.authenticated", f"COST:{cost_id}",
             {"user_id": user.user_id}, actor=audit_identity(user),
@@ -220,9 +284,8 @@ def install_auth(app, db_path) -> UserStore:
     @wraps(original_approve)
     def secured_correction_approval(correction_id, *args, **kwargs):
         user = current_user()
-        if not is_approver(user, app.config["COMPANY_CONFIG"].profile.approver_roles):
-            flash("Authorized approver role required", "error")
-            return redirect(url_for("correction_dashboard"))
+        if not permissions.user_has(user, "corrections.approve"):
+            return deny("Correction-approval permission required")
         result = original_approve(correction_id, *args, **kwargs)
         app.config["AUDIT_LOG"].append(
             "cost.correction.approver.authenticated", f"CORRECTION:{correction_id}",
@@ -231,4 +294,14 @@ def install_auth(app, db_path) -> UserStore:
         return result
 
     app.view_functions["approve_cost_correction"] = secured_correction_approval
+
+    original_reject = app.view_functions["reject_cost_correction"]
+
+    @wraps(original_reject)
+    def secured_correction_rejection(correction_id, *args, **kwargs):
+        if not has("corrections.approve"):
+            return deny("Correction-approval permission required")
+        return original_reject(correction_id, *args, **kwargs)
+
+    app.view_functions["reject_cost_correction"] = secured_correction_rejection
     return users
