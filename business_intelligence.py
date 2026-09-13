@@ -108,8 +108,13 @@ def completed_job_readiness(book) -> list[InvoiceReadiness]:
     ]
 
 
-def exception_queue(book) -> list[ExceptionItem]:
-    """Return human-attention items. Unknown state becomes review, never a guess."""
+def exception_queue(book, verifier_registry=None) -> list[ExceptionItem]:
+    """Return human-attention items. Unknown state becomes review, never a guess.
+
+    Deterministic verifier FAIL results are added when a registry is supplied.
+    UNKNOWN results remain visible on the verification page but are not mislabeled
+    as contradictions here; ordinary review rules already surface missing evidence.
+    """
     result: list[ExceptionItem] = []
     seen: set[tuple[str, str, str]] = set()
 
@@ -142,6 +147,23 @@ def exception_queue(book) -> list[ExceptionItem]:
                 reference_id=readiness.work_order_id,
                 message=message,
                 required_action="Resolve blockers before preparing the invoice",
+            ))
+
+    if verifier_registry is not None:
+        for verification in verifier_registry.run(book):
+            if verification.status != "FAIL":
+                continue
+            message = f"{verification.verifier_id}: {verification.summary}"
+            key = ("verification_failed", verification.object_id, message)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(ExceptionItem(
+                kind="verification_failed",
+                severity=verification.severity,
+                reference_id=verification.object_id,
+                message=message,
+                required_action="Review deterministic verifier evidence before posting, reconciling, or closing",
             ))
 
     severity_rank = {"S5": 5, "S4": 4, "S3": 3, "S2": 2, "S1": 1, "S0": 0}
