@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-from app import Bookkeeper
+from app import Bookkeeper, Cost, VendorBill
 
 
 @dataclass
@@ -67,3 +67,68 @@ def proposal_from_extraction(
         record_type=record_type,
         document_id=document_id,
     )
+
+
+def record_approved_document(
+    book: Bookkeeper,
+    *,
+    record_id: str,
+    vendor: str,
+    amount: Decimal,
+    reference: str = "",
+    work_order_id: str | None = None,
+    record_type: str = "vendor_bill",
+    treatment: str = "ask",
+    linked_cost_id: str | None = None,
+):
+    """Validate the complete user decision before changing bookkeeping state."""
+    record_id = record_id.strip()
+    vendor = vendor.strip()
+    if not record_id:
+        raise ValueError("A record ID is required")
+    if not vendor:
+        raise ValueError("Vendor is required")
+    if amount <= 0:
+        raise ValueError("Amount must be greater than zero")
+    if work_order_id and work_order_id not in book.work_orders:
+        raise ValueError("Unknown work order")
+
+    if record_type == "cost":
+        if record_id in book.costs:
+            raise ValueError("Duplicate cost ID")
+        cost = Cost(
+            id=record_id,
+            vendor=vendor,
+            amount=amount,
+            kind="document_cost",
+            work_order_id=work_order_id,
+            reference=reference or None,
+        )
+        book.add_cost(cost)
+        return cost
+
+    if record_type != "vendor_bill":
+        raise ValueError("Invalid document record type")
+    if record_id in book.vendor_bills:
+        raise ValueError("Duplicate vendor bill ID")
+    if treatment not in {"ask", "create_cost", "support_cost", "overhead"}:
+        raise ValueError("Invalid vendor bill treatment")
+
+    if treatment == "create_cost":
+        if not work_order_id:
+            raise ValueError("Job cost treatment requires a work order")
+        if f"BILL-COST-{record_id}" in book.costs:
+            raise ValueError("Generated bill cost ID already exists")
+
+    if treatment == "support_cost":
+        if not linked_cost_id or linked_cost_id not in book.costs:
+            raise ValueError("Support treatment requires an existing cost")
+        cost = book.costs[linked_cost_id]
+        if work_order_id and cost.work_order_id and work_order_id != cost.work_order_id:
+            raise ValueError("Vendor bill and cost reference different work orders")
+
+    bill = VendorBill(id=record_id, vendor=vendor, amount=amount, work_order_id=work_order_id)
+    book.add_vendor_bill(bill)
+    if treatment != "ask":
+        book.treat_vendor_bill(record_id, treatment=treatment, linked_cost_id=linked_cost_id)
+    return bill
