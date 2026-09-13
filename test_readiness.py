@@ -1,3 +1,5 @@
+from cryptography.fernet import Fernet
+
 from connectors import ConnectorHub
 from secure_web_app import create_secure_app
 from readiness import build_readiness
@@ -65,3 +67,29 @@ def test_readiness_page_reports_core_ready_after_onboarding(tmp_path):
     assert response.status_code == 200
     assert b"Core configuration is ready" in response.data
     assert b"selected, but no live adapter is loaded yet" in response.data
+
+
+def test_managed_oauth_waiting_for_authorization_is_blocking(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOKKEEPER_CREDENTIAL_KEY", Fernet.generate_key().decode("ascii"))
+    app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=ConnectorHub())
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    bootstrap_and_onboard(app, client)
+
+    store = app.config["CONNECTION_STORE"]
+    store.save(
+        "quickbooks", "QuickBooks Online", ["payments.read", "deposits.read"],
+        {
+            "client_id": "client",
+            "client_secret": "secret",
+            "redirect_uri": "http://localhost/oauth/quickbooks/callback",
+            "scope": "com.intuit.quickbooks.accounting",
+        },
+        status="authorization_required",
+    )
+
+    items = build_readiness(app)
+    qbo = next(item for item in items if item.title.startswith("QuickBooks Online connection"))
+    assert qbo.blocking is True
+    assert qbo.status == "missing"
+    assert "Authorization has not been completed" in qbo.detail
