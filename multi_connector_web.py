@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from flask import flash, g, redirect, render_template, url_for
 
 from imports import import_deposits, import_payments, import_work_orders
@@ -13,6 +15,15 @@ def install_multi_connector_routes(app) -> None:
 
     def save():
         app.config["SAVE_BOOKKEEPER"]()
+
+    def restore_book(snapshot) -> None:
+        book.vendor_bill_mode = snapshot.vendor_bill_mode
+        book.work_orders = snapshot.work_orders
+        book.costs = snapshot.costs
+        book.vendor_bills = snapshot.vendor_bills
+        book.invoices = snapshot.invoices
+        book.payments = snapshot.payments
+        book.deposits = snapshot.deposits
 
     def connector_name(connector) -> str:
         return getattr(connector, "name", connector.__class__.__name__)
@@ -65,6 +76,7 @@ def install_multi_connector_routes(app) -> None:
         sid = connector_id(source)
         sname = connector_name(source)
         run_id = sync.start_run(sid, sname, capability, "pull")
+        snapshot = deepcopy(book)
         try:
             rows = loader()
             result = importer(book, rows)
@@ -74,11 +86,18 @@ def install_multi_connector_routes(app) -> None:
                 detail={"errors": list(result.errors)},
             )
             report(label, result, sname)
-            hub.emit(f"{capability}.imported", {
-                "source": sname, "connector_id": sid, "added": result.added, "skipped": result.skipped,
-            })
+            try:
+                hub.emit(f"{capability}.imported", {
+                    "source": sname, "connector_id": sid, "added": result.added, "skipped": result.skipped,
+                })
+            except Exception:
+                pass
         except Exception as exc:
-            sync.fail_run(run_id, str(exc))
+            restore_book(snapshot)
+            try:
+                sync.fail_run(run_id, str(exc))
+            except ValueError:
+                pass
             flash(f"{sname} {label} sync failed: {exc}", "error")
 
     def sync_field_service_multi():
@@ -110,9 +129,17 @@ def install_multi_connector_routes(app) -> None:
                 raise ValueError("Invoice is already issued")
             sinks = hub.invoice_sinks()
             if not sinks:
+                old_status = invoice.status
                 invoice.status = "issued"
-                save()
-                hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": {}})
+                try:
+                    save()
+                except Exception:
+                    invoice.status = old_status
+                    raise
+                try:
+                    hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": {}})
+                except Exception:
+                    pass
                 flash("Invoice issued locally; no external invoice destination is configured", "success")
                 return redirect(url_for("dashboard"))
 
@@ -138,7 +165,10 @@ def install_multi_connector_routes(app) -> None:
                     sync.mark_sent(item.item_id, str(external_id))
                     results[sname] = str(external_id)
                 except Exception as exc:
-                    sync.mark_uncertain(item.item_id, str(exc))
+                    try:
+                        sync.mark_uncertain(item.item_id, str(exc))
+                    except ValueError:
+                        pass
                     blocked = True
                     flash(f"{sname}: delivery became uncertain: {exc}", "error")
 
@@ -146,9 +176,17 @@ def install_multi_connector_routes(app) -> None:
                 flash("Invoice remains draft until all external destinations are confirmed.", "error")
                 return redirect(url_for("dashboard"))
 
+            old_status = invoice.status
             invoice.status = "issued"
-            save()
-            hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": results})
+            try:
+                save()
+            except Exception:
+                invoice.status = old_status
+                raise
+            try:
+                hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": results})
+            except Exception:
+                pass
             flash("Invoice issued and confirmed by configured invoice destination(s)", "success")
         except Exception as exc:
             flash(str(exc), "error")
