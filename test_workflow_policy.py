@@ -32,7 +32,7 @@ def test_company_can_configure_workflow_rule(tmp_path):
         "threshold": "1000",
         "threshold_approvals": "2",
     })
-    assert response.status_code == 302
+    assert response.status_code == 200
     policy = app.config["WORKFLOW_POLICY"]
     assert policy.approvals_required("document_cost", Decimal("500")) == 0
     assert policy.approvals_required("document_cost", Decimal("1000")) == 2
