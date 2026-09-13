@@ -1,10 +1,17 @@
 """Bookkeeper Assistant — KISS core."""
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
 
 Money = Decimal
+
+
+def _contains_id(reference: str, value: str) -> bool:
+    """Match an external ID as a whole token, not as a prefix of another ID."""
+    pattern = rf"(?<![A-Z0-9]){re.escape(value.upper())}(?![A-Z0-9])"
+    return re.search(pattern, reference.upper()) is not None
 
 
 @dataclass
@@ -116,14 +123,20 @@ class Bookkeeper:
     deposits: dict[str, BankDeposit] = field(default_factory=dict)
 
     def add_work_order(self, work_order: WorkOrder) -> None:
+        if work_order.id in self.work_orders:
+            raise ValueError("Duplicate work order ID")
         self.work_orders[work_order.id] = work_order
 
     def add_cost(self, cost: Cost) -> None:
+        if cost.id in self.costs:
+            raise ValueError("Duplicate cost ID")
         if cost.amount <= 0:
             raise ValueError("Cost amount must be greater than zero")
         self.costs[cost.id] = cost
 
     def add_vendor_bill(self, bill: VendorBill) -> None:
+        if bill.id in self.vendor_bills:
+            raise ValueError("Duplicate vendor bill ID")
         if bill.amount <= 0:
             raise ValueError("Vendor bill amount must be greater than zero")
         if bill.amount_paid < 0 or bill.amount_paid > bill.amount:
@@ -150,9 +163,9 @@ class Bookkeeper:
         }
 
     def near_term_position(self) -> dict[str, Money]:
-        """Operational snapshot only: open AR minus open AP. Not a cash forecast."""
+        """Operational snapshot only: issued open AR minus open AP. Not a cash forecast."""
         receivables = sum(
-            (i.balance_due for i in self.invoices.values() if i.payment_status != "paid"),
+            (i.balance_due for i in self.invoices.values() if i.status != "draft" and i.payment_status != "paid"),
             Decimal("0"),
         )
         payables = self.accounts_payable_summary()["open_bill_balance"]
@@ -166,8 +179,7 @@ class Bookkeeper:
         cost = self.costs[cost_id]
         if not cost.reference:
             return None
-        reference = cost.reference.upper()
-        matches = [wo_id for wo_id in self.work_orders if wo_id.upper() in reference]
+        matches = [wo_id for wo_id in self.work_orders if _contains_id(cost.reference, wo_id)]
         return matches[0] if len(matches) == 1 else None
 
     def match_cost(self, cost_id: str, work_order_id: str) -> Cost:
@@ -184,21 +196,31 @@ class Bookkeeper:
         return self.match_cost(cost_id, suggestion)
 
     def add_invoice(self, invoice: Invoice) -> None:
+        if invoice.id in self.invoices:
+            raise ValueError("Duplicate invoice ID")
+        if invoice.total <= 0:
+            raise ValueError("Invoice total must be greater than zero")
+        if invoice.amount_paid < 0 or invoice.amount_paid > invoice.total:
+            raise ValueError("Invalid invoice paid amount")
         self.invoices[invoice.id] = invoice
 
     def add_payment(self, payment: Payment) -> None:
+        if payment.id in self.payments:
+            raise ValueError("Duplicate payment ID")
         if payment.amount <= 0:
             raise ValueError("Payment amount must be greater than zero")
-        self.payments[payment.id] = payment
         if payment.invoice_id and payment.invoice_id in self.invoices:
-            self.invoices[payment.invoice_id].amount_paid += payment.amount
+            invoice = self.invoices[payment.invoice_id]
+            if payment.amount > invoice.balance_due:
+                raise ValueError("Payment exceeds invoice balance due")
+            invoice.amount_paid += payment.amount
+        self.payments[payment.id] = payment
 
     def suggest_payment_match(self, payment_id: str) -> str | None:
         payment = self.payments[payment_id]
         if not payment.reference:
             return None
-        reference = payment.reference.upper()
-        matches = [invoice_id for invoice_id in self.invoices if invoice_id.upper() in reference]
+        matches = [invoice_id for invoice_id in self.invoices if _contains_id(payment.reference, invoice_id)]
         return matches[0] if len(matches) == 1 else None
 
     def match_payment(self, payment_id: str, invoice_id: str) -> Payment:
@@ -207,8 +229,11 @@ class Bookkeeper:
         payment = self.payments[payment_id]
         if payment.invoice_id:
             raise ValueError("Payment is already matched")
+        invoice = self.invoices[invoice_id]
+        if payment.amount > invoice.balance_due:
+            raise ValueError("Payment exceeds invoice balance due")
         payment.invoice_id = invoice_id
-        self.invoices[invoice_id].amount_paid += payment.amount
+        invoice.amount_paid += payment.amount
         return payment
 
     def accept_payment_match(self, payment_id: str) -> Payment:
@@ -218,6 +243,8 @@ class Bookkeeper:
         return self.match_payment(payment_id, suggestion)
 
     def add_deposit(self, deposit: BankDeposit) -> None:
+        if deposit.id in self.deposits:
+            raise ValueError("Duplicate deposit ID")
         if deposit.amount <= 0:
             raise ValueError("Deposit amount must be greater than zero")
         if deposit.processor_fee < 0:
@@ -228,8 +255,7 @@ class Bookkeeper:
         deposit = self.deposits[deposit_id]
         if not deposit.reference:
             return None
-        reference = deposit.reference.upper()
-        matches = [payment_id for payment_id in self.payments if payment_id.upper() in reference]
+        matches = [payment_id for payment_id in self.payments if _contains_id(deposit.reference, payment_id)]
         return matches[0] if len(matches) == 1 else None
 
     def match_deposit(self, deposit_id: str, payment_id: str) -> BankDeposit:
@@ -238,6 +264,8 @@ class Bookkeeper:
         deposit = self.deposits[deposit_id]
         if deposit.payment_id:
             raise ValueError("Deposit is already matched")
+        if any(d.payment_id == payment_id for d in self.deposits.values() if d.id != deposit_id):
+            raise ValueError("Payment is already matched to another deposit")
         deposit.payment_id = payment_id
         return deposit
 
@@ -257,6 +285,8 @@ class Bookkeeper:
     def deposit_status(self, deposit_id: str) -> str:
         deposit = self.deposits[deposit_id]
         if not deposit.payment_id:
+            return "unmatched"
+        if deposit.payment_id not in self.payments:
             return "unmatched"
         if self.deposit_difference(deposit_id) == 0:
             return "explained" if deposit.processor_fee > 0 else "matched"
@@ -298,8 +328,6 @@ class Bookkeeper:
                 issues.append("Invoice customer does not match work order")
             if wo.quoted_total is not None and invoice.total != wo.quoted_total:
                 issues.append("Invoice total differs from quoted total")
-            if invoice.total <= 0:
-                issues.append("Invoice total must be greater than zero")
         ready = wo.status == "complete" and invoice is not None and not issues
         return InvoiceReview(wo.id, "ready" if ready else "needs_attention", invoice.id if invoice else None,
                              wo.quoted_total, invoice.total if invoice else None, self.job_cost(wo.id),
@@ -322,15 +350,15 @@ class Bookkeeper:
                 message = f"Suggested work order: {suggestion}" if suggestion else "Cost is not assigned to a job or overhead"
                 issues.append(ReviewItem("unassigned_cost", message, cost.id))
         for payment in self.payments.values():
-            if payment.invoice_id is None:
-                suggestion = self.suggest_payment_match(payment.id)
-                message = f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to an invoice"
+            if payment.invoice_id is None or payment.invoice_id not in self.invoices:
+                suggestion = self.suggest_payment_match(payment.id) if payment.invoice_id is None else None
+                message = f"Suggested invoice: {suggestion}" if suggestion else "Payment is not matched to a valid invoice"
                 issues.append(ReviewItem("unmatched_payment", message, payment.id))
         for deposit in self.deposits.values():
             status = self.deposit_status(deposit.id)
             if status == "unmatched":
                 suggestion = self.suggest_deposit_match(deposit.id)
-                message = f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a payment"
+                message = f"Suggested payment: {suggestion}" if suggestion else "Bank deposit is not matched to a valid payment"
                 issues.append(ReviewItem("unmatched_deposit", message, deposit.id))
             elif status == "difference":
                 issues.append(ReviewItem("deposit_difference", f"Deposit still differs by {self.deposit_difference(deposit.id)}", deposit.id))
@@ -338,7 +366,7 @@ class Bookkeeper:
 
     def attention_summary(self) -> dict[str, object]:
         issues = self.review()
-        unpaid = [i for i in self.invoices.values() if i.payment_status != "paid"]
+        unpaid = [i for i in self.invoices.values() if i.status != "draft" and i.payment_status != "paid"]
         ap = self.accounts_payable_summary()
         position = self.near_term_position()
         return {
