@@ -7,9 +7,9 @@ from pathlib import Path
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from app import BankDeposit, Cost, Payment, VendorBill, WorkOrder
+from app import BankDeposit, Payment, WorkOrder
 from connectors import ConnectorHub
-from document_intake import proposal_from_extraction
+from document_intake import proposal_from_extraction, record_approved_document
 from imports import (
     import_deposits,
     import_deposits_csv,
@@ -112,55 +112,26 @@ def create_app(data_path: str | None = None, connectors: ConnectorHub | None = N
     @app.post("/documents/approve")
     def approve_document():
         def action():
-            vendor = request.form["vendor"].strip()
-            amount = Decimal(request.form["amount"])
-            reference = request.form.get("reference", "").strip()
-            work_order_id = request.form.get("work_order_id", "").strip() or None
-            record_type = request.form.get("record_type", "vendor_bill")
-            treatment = request.form.get("treatment", "ask")
-            document_id = request.form.get("document_id", "").strip()
-            record_id = request.form.get("record_id", "").strip()
-            if not record_id:
-                raise ValueError("A record ID is required")
-            if work_order_id and work_order_id not in book.work_orders:
-                raise ValueError("Unknown work order")
-
-            if record_type == "cost":
-                cost = Cost(
-                    id=record_id,
-                    vendor=vendor,
-                    amount=amount,
-                    kind="document_cost",
-                    work_order_id=work_order_id,
-                    reference=reference or document_id or None,
-                )
-                book.add_cost(cost)
-                hub.emit("document.approved", {"record_type": "cost", "record_id": cost.id})
-                return
-
-            if record_type != "vendor_bill":
-                raise ValueError("Invalid document record type")
-
-            bill = VendorBill(
-                id=record_id,
-                vendor=vendor,
-                amount=amount,
-                work_order_id=work_order_id,
+            record = record_approved_document(
+                book,
+                record_id=request.form.get("record_id", ""),
+                vendor=request.form.get("vendor", ""),
+                amount=Decimal(request.form["amount"]),
+                reference=request.form.get("reference", "").strip(),
+                work_order_id=request.form.get("work_order_id", "").strip() or None,
+                record_type=request.form.get("record_type", "vendor_bill"),
+                treatment=request.form.get("treatment", "ask"),
+                linked_cost_id=request.form.get("linked_cost_id", "").strip() or None,
             )
-            book.add_vendor_bill(bill)
-            if treatment != "ask":
-                linked_cost_id = request.form.get("linked_cost_id", "").strip() or None
-                book.treat_vendor_bill(bill.id, treatment=treatment, linked_cost_id=linked_cost_id)
             hub.emit("document.approved", {
-                "record_type": "vendor_bill",
-                "record_id": bill.id,
-                "treatment": bill.treatment,
+                "record_type": "cost" if record.id in book.costs else "vendor_bill",
+                "record_id": record.id,
             })
+            return record
 
-        result = run(action)
-        if result is None and request.form.get("record_id") not in book.costs and request.form.get("record_id") not in book.vendor_bills:
-            return redirect(url_for("dashboard"))
-        flash("Document approved and recorded", "success")
+        record = run(action)
+        if record is not None:
+            flash("Document approved and recorded", "success")
         return redirect(url_for("dashboard"))
 
     @app.post("/imports/work-orders/csv")
