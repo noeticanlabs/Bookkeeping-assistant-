@@ -17,6 +17,12 @@ ACTION_PERMISSIONS = {
     "sync.run": "sync.run",
     "invoice.issue": "invoice.issue",
     "document.submit": "documents.submit",
+    "work_order.create": "bookkeeping.write",
+    "invoice.prepare": "bookkeeping.write",
+    "payment.record": "bookkeeping.write",
+    "payment.match": "bookkeeping.write",
+    "deposit.record": "bookkeeping.write",
+    "deposit.match": "bookkeeping.write",
 }
 
 
