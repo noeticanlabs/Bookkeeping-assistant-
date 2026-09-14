@@ -27,16 +27,17 @@
   </nav>
 
   <h1>Settlement Reconciliation</h1>
-  <p>Prove processor payouts from their underlying payments and explicit deductions. Unknown differences stay visible; there is no generic balancing adjustment.</p>
+  <p>Prove the chain from customer payments to processor payout to the independently observed bank deposit. Unknown differences stay visible; there is no generic balancing adjustment.</p>
 
   <div class="card">
-    <h2>New settlement</h2>
+    <h2>New manual settlement</h2>
     <form method="post" action="{{ url_for('create_settlement') }}">
       <label>Settlement ID<br><input name="settlement_id" required></label>
       <label>Provider<br><input name="provider" placeholder="Stripe" required></label>
       <label>Reference<br><input name="reference" placeholder="payout / batch reference"></label>
       <button>Create</button>
     </form>
+    <small>Connected processors such as Stripe can create settlement evidence automatically. Manual creation does not invent a reported payout amount.</small>
   </div>
 
   {% for row in rows %}
@@ -47,18 +48,20 @@
       <p>Status: <strong class="{{ r.status }}">{{ r.status|upper }}</strong>{% if s.reference %} · {{ s.reference }}{% endif %}</p>
 
       <table>
-        <tr><th>Gross payments</th><td>{{ r.gross_payments }}</td></tr>
-        <tr><th>Fees</th><td>-{{ r.fees }}</td></tr>
+        <tr><th>Gross customer payments</th><td>{{ r.gross_payments }}</td></tr>
+        <tr><th>Processor fees</th><td>-{{ r.fees }}</td></tr>
         <tr><th>Refunds</th><td>-{{ r.refunds }}</td></tr>
         <tr><th>Chargebacks</th><td>-{{ r.chargebacks }}</td></tr>
-        <tr><th>Expected net</th><td><strong>{{ r.expected_net }}</strong></td></tr>
-        <tr><th>Bank deposit</th><td>{{ r.actual_deposit if r.actual_deposit is not none else '—' }}</td></tr>
-        <tr><th>Difference</th><td>{{ r.difference if r.difference is not none else '—' }}</td></tr>
+        <tr><th>Calculated net settlement</th><td><strong>{{ r.expected_net }}</strong></td></tr>
+        <tr><th>Processor-reported payout</th><td>{{ r.reported_net if r.reported_net is not none else '—' }}</td></tr>
+        <tr><th>Components → payout difference</th><td>{{ r.component_difference if r.component_difference is not none else '—' }}</td></tr>
+        <tr><th>Independent bank deposit</th><td>{{ r.actual_deposit if r.actual_deposit is not none else '—' }}</td></tr>
+        <tr><th>Payout → bank difference</th><td>{{ r.bank_difference if r.bank_difference is not none else '—' }}</td></tr>
       </table>
 
       <p><strong>Payments:</strong> {{ r.payment_ids|join(', ') if r.payment_ids else 'none' }}</p>
       {% if row.adjustments %}
-        <p><strong>Adjustments:</strong>
+        <p><strong>Explicit deductions:</strong>
         {% for a in row.adjustments %}
           {{ a.adjustment_id }} ({{ a.kind }} {{ a.amount }}){% if not loop.last %}, {% endif %}
         {% endfor %}
@@ -67,7 +70,7 @@
 
       <div class="grid">
         <div>
-          <strong>Add payment</strong>
+          <strong>Add customer payment</strong>
           <form method="post" action="{{ url_for('add_settlement_payment', settlement_id=s.settlement_id) }}">
             <select name="payment_id" required>
               <option value="">Choose payment</option>
@@ -95,7 +98,7 @@
         </div>
 
         <div>
-          <strong>Link bank deposit</strong>
+          <strong>Link independent bank deposit</strong>
           <form method="post" action="{{ url_for('link_settlement_deposit', settlement_id=s.settlement_id) }}">
             <select name="deposit_id" required>
               <option value="">Choose deposit</option>
