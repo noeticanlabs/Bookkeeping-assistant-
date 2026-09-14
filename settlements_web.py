@@ -39,6 +39,7 @@ def install_settlements(app, store) -> None:
                 "settlement": settlement,
                 "reconciliation": store.reconcile(settlement.settlement_id, current_book),
                 "adjustments": store.adjustments(settlement.settlement_id),
+                "components": store.components(settlement.settlement_id),
             }
             for settlement in store.list()
         ]
@@ -74,6 +75,8 @@ def install_settlements(app, store) -> None:
             return deny_write()
         payment_id = request.form.get("payment_id", "").strip()
         try:
+            if store.components(settlement_id):
+                raise ValueError("Imported processor composition is read-only; payment membership comes from processor evidence")
             store.add_payment(settlement_id, payment_id, book())
             audit("settlement.payment.added", settlement_id, {"payment_id": payment_id})
             flash("Payment added to settlement", "success")
@@ -86,6 +89,8 @@ def install_settlements(app, store) -> None:
         if not can_write():
             return deny_write()
         try:
+            if store.components(settlement_id):
+                raise ValueError("Imported processor composition is read-only; deductions come from processor evidence")
             adjustment = store.add_adjustment(
                 request.form.get("adjustment_id", ""),
                 settlement_id,
@@ -118,13 +123,14 @@ def install_settlements(app, store) -> None:
                 "expected_net": str(reconciliation.expected_net),
                 "actual_deposit": str(reconciliation.actual_deposit) if reconciliation.actual_deposit is not None else None,
                 "difference": str(reconciliation.difference) if reconciliation.difference is not None else None,
+                "processor_component_count": reconciliation.processor_component_count,
             })
             if reconciliation.status == "reconciled":
                 flash("Settlement reconciles exactly to the bank deposit", "success")
             elif reconciliation.status == "difference":
                 flash(f"Settlement differs from the bank deposit by {reconciliation.difference}", "error")
             else:
-                flash("Deposit linked; additional settlement evidence is still required", "error")
+                flash("Deposit linked; additional settlement evidence or classification is still required", "error")
         except ValueError as exc:
             flash(str(exc), "error")
         return redirect(url_for("settlement_dashboard"))
