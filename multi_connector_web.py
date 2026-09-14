@@ -119,7 +119,7 @@ def install_multi_connector_routes(app) -> None:
             if settlement_store is None:
                 raise RuntimeError("Settlement store is not configured")
             rows = source.pull_settlements()
-            result = settlement_store.import_evidence(rows)
+            result = settlement_store.import_evidence(rows, book=book)
             sync.finish_run(
                 run_id, added=result.added, skipped=result.skipped,
                 detail={"errors": list(result.errors)},
