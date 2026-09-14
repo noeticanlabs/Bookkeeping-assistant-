@@ -33,6 +33,10 @@ def install_multi_connector_routes(app) -> None:
     def connector_id(connector) -> str:
         return getattr(connector, "_managed_connection_id", None) or f"RUNTIME:{connector.__class__.__name__}:{connector_name(connector)}"
 
+    def actor_identity() -> str:
+        user = g.current_user
+        return f"{user.display_name} [{user.username}] ({user.role})"
+
     def report(label: str, result, source: str) -> None:
         if result.errors:
             flash(f"{source}: " + "; ".join(result.errors), "error")
@@ -168,6 +172,7 @@ def install_multi_connector_routes(app) -> None:
     @requires_action(app, "invoice.issue")
     def issue_invoice_multi(invoice_id: str):
         sync = app.config["SYNC_RELIABILITY"]
+        uow = app.config["FINANCIAL_MUTATION_UOW"]
         try:
             invoice = book.invoices[invoice_id]
             if invoice.status != "draft":
@@ -184,66 +189,68 @@ def install_multi_connector_routes(app) -> None:
                     )
 
             sinks = hub.invoice_sinks()
-            if not sinks:
-                old_status = invoice.status
-                invoice.status = "issued"
-                try:
-                    save()
-                except Exception:
-                    invoice.status = old_status
-                    raise
-                try:
-                    hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": {}})
-                except Exception:
-                    pass
-                flash("Invoice issued locally; no external invoice destination is configured", "success")
-                return redirect(url_for("dashboard"))
-
             results: dict[str, str] = {}
-            blocked = False
-            for sink in sinks:
-                sid = connector_id(sink)
-                sname = connector_name(sink)
-                item = sync.enqueue(
-                    sid, sname, "invoice.push", "invoice", invoice.id,
-                    {"invoice_id": invoice.id, "work_order_id": invoice.work_order_id, "total": str(invoice.total)},
-                )
-                if item.status == "succeeded":
-                    results[sname] = item.external_id or "sent"
-                    continue
-                if item.status == "uncertain":
-                    blocked = True
-                    flash(f"{sname}: invoice delivery is uncertain. Check the remote system before authorizing a retry.", "error")
-                    continue
-                try:
-                    sync.begin_send(item.item_id)
-                    external_id = sink.push_invoice(invoice)
-                    sync.mark_sent(item.item_id, str(external_id))
-                    results[sname] = str(external_id)
-                except Exception as exc:
+            if sinks:
+                blocked = False
+                for sink in sinks:
+                    sid = connector_id(sink)
+                    sname = connector_name(sink)
+                    item = sync.enqueue(
+                        sid, sname, "invoice.push", "invoice", invoice.id,
+                        {"invoice_id": invoice.id, "work_order_id": invoice.work_order_id, "total": str(invoice.total)},
+                    )
+                    if item.status == "succeeded":
+                        results[sname] = item.external_id or "sent"
+                        continue
+                    if item.status == "uncertain":
+                        blocked = True
+                        flash(f"{sname}: invoice delivery is uncertain. Check the remote system before authorizing a retry.", "error")
+                        continue
                     try:
-                        sync.mark_uncertain(item.item_id, str(exc))
-                    except ValueError:
-                        pass
-                    blocked = True
-                    flash(f"{sname}: delivery became uncertain: {exc}", "error")
+                        sync.begin_send(item.item_id)
+                        external_id = sink.push_invoice(invoice)
+                        sync.mark_sent(item.item_id, str(external_id))
+                        results[sname] = str(external_id)
+                    except Exception as exc:
+                        try:
+                            sync.mark_uncertain(item.item_id, str(exc))
+                        except ValueError:
+                            pass
+                        blocked = True
+                        flash(f"{sname}: delivery became uncertain: {exc}", "error")
 
-            if blocked:
-                flash("Invoice remains draft until all external destinations are confirmed.", "error")
-                return redirect(url_for("dashboard"))
+                if blocked:
+                    flash("Invoice remains draft until all external destinations are confirmed.", "error")
+                    return redirect(url_for("dashboard"))
 
-            old_status = invoice.status
-            invoice.status = "issued"
-            try:
-                save()
-            except Exception:
-                invoice.status = old_status
-                raise
+            def mark_issued():
+                if invoice.status != "draft":
+                    raise ValueError("Invoice is already issued")
+                invoice.status = "issued"
+                return invoice
+
+            uow.commit(
+                mark_issued,
+                event_type="invoice.issued",
+                evidence_id=lambda row: f"INVOICE:{row.id}",
+                payload=lambda row: {
+                    "invoice_id": row.id,
+                    "work_order_id": row.work_order_id,
+                    "total": str(row.total),
+                    "external_ids": dict(results),
+                    "authority_action": "invoice.issue",
+                    "authenticated_user_id": g.current_user.user_id,
+                },
+                actor=actor_identity(),
+            )
             try:
                 hub.emit("invoice.issued", {"invoice_id": invoice.id, "external_ids": results})
             except Exception:
                 pass
-            flash("Invoice issued and confirmed by configured invoice destination(s)", "success")
+            if sinks:
+                flash("Invoice issued and confirmed by configured invoice destination(s)", "success")
+            else:
+                flash("Invoice issued locally; no external invoice destination is configured", "success")
         except Exception as exc:
             flash(str(exc), "error")
         return redirect(url_for("dashboard"))
