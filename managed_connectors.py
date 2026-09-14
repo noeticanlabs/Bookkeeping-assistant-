@@ -249,6 +249,14 @@ def load_managed_connectors(hub: ConnectorHub, store: ConnectionStore) -> list[s
     for record in store.list():
         if record.status not in {"configured", "connected"}:
             continue
+        if record.provider.lower() == "stripe":
+            desired = ("payments.read", "settlements.read")
+            if set(record.capabilities) != set(desired):
+                data = store.secrets(record.connection_id)
+                record = store.save(
+                    record.provider, record.label, desired, data,
+                    connection_id=record.connection_id, status=record.status,
+                )
         connector = build_connector(store, record.connection_id)
         if connector is not None:
             hub.register(connector)
