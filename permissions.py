@@ -10,6 +10,8 @@ from pathlib import Path
 PERMISSIONS = (
     "records.read",
     "bookkeeping.write",
+    "sync.run",
+    "invoice.issue",
     "documents.approve",
     "corrections.propose",
     "corrections.approve",
@@ -20,14 +22,20 @@ PERMISSIONS = (
 DEFAULT_ROLE_PERMISSIONS = {
     "Administrator": set(PERMISSIONS),
     "Owner": {
-        "records.read", "bookkeeping.write", "documents.approve",
-        "corrections.propose", "corrections.approve",
+        "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
+        "documents.approve", "corrections.propose", "corrections.approve",
     },
     "Bookkeeper": {
-        "records.read", "bookkeeping.write", "documents.approve", "corrections.propose",
+        "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
+        "documents.approve", "corrections.propose",
     },
     "Viewer": {"records.read"},
 }
+
+# Existing installations predate action-specific sync/invoice permissions. Preserve
+# their historical bookkeeping.write capability exactly once during migration;
+# administrators are always brought to the complete irreducible permission set.
+LEGACY_BOOKKEEPING_WRITE_IMPLIED = {"sync.run", "invoice.issue"}
 
 
 class PermissionStore:
@@ -55,6 +63,20 @@ class PermissionStore:
                     "INSERT OR IGNORE INTO role_permissions(role,permissions) VALUES(?,?)",
                     (role, json.dumps(sorted(permissions))),
                 )
+
+            rows = conn.execute("SELECT role,permissions FROM role_permissions").fetchall()
+            for row in rows:
+                current = set(json.loads(row["permissions"]))
+                migrated = set(current)
+                if row["role"] == "Administrator":
+                    migrated = set(PERMISSIONS)
+                elif "bookkeeping.write" in current:
+                    migrated.update(LEGACY_BOOKKEEPING_WRITE_IMPLIED)
+                if migrated != current:
+                    conn.execute(
+                        "UPDATE role_permissions SET permissions=? WHERE role=?",
+                        (json.dumps(sorted(migrated)), row["role"]),
+                    )
 
     def roles(self) -> dict[str, set[str]]:
         with self._connect() as conn:
