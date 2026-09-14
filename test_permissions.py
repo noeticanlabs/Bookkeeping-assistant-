@@ -53,7 +53,7 @@ def test_viewer_cannot_write_bookkeeping(tmp_path):
     }, follow_redirects=True)
     assert response.status_code == 200
     assert "WO-DENIED" not in app.config["BOOKKEEPER"].work_orders
-    assert b"Bookkeeping-write permission required" in response.data
+    assert b"bookkeeping.write permission required" in response.data
 
 
 def test_bookkeeper_can_write_until_company_removes_permission(tmp_path):
