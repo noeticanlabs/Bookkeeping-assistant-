@@ -7,6 +7,14 @@ from secure_web_app import create_secure_app
 from sync_reliability import SyncReliabilityStore
 
 
+def setup_admin(client):
+    return client.post("/setup", data={
+        "display_name": "Admin User",
+        "username": "admin",
+        "password": "administrator-pass",
+    })
+
+
 def test_sync_runs_record_success_and_failure(tmp_path):
     store = SyncReliabilityStore(tmp_path / "bookkeeper.sqlite3")
     ok = store.start_run("CONN-1", "Source", "payments.read")
@@ -69,21 +77,21 @@ def test_invoice_uncertain_delivery_stays_draft_and_is_not_resent(tmp_path):
     hub.register(sink)
     app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=hub)
     app.config.update(TESTING=True)
+    client = app.test_client()
+    setup_admin(client)
     book = app.config["BOOKKEEPER"]
     book.add_work_order(WorkOrder("WO-1", "Customer", "Repair", status="complete"))
     book.add_invoice(Invoice("INV-1", "WO-1", "Customer", Decimal("100")))
 
-    with app.test_request_context("/invoice/INV-1/issue", method="POST"):
-        response = app.view_functions["issue_invoice"]("INV-1")
-        assert response.status_code in (302, 303)
+    response = client.post("/invoices/INV-1/issue")
+    assert response.status_code in (302, 303)
     assert sink.calls == 1
     assert book.invoices["INV-1"].status == "draft"
     outbox = app.config["SYNC_RELIABILITY"].list_outbox()
     assert len(outbox) == 1
     assert outbox[0].status == "uncertain"
 
-    with app.test_request_context("/invoice/INV-1/issue", method="POST"):
-        app.view_functions["issue_invoice"]("INV-1")
+    client.post("/invoices/INV-1/issue")
     assert sink.calls == 1
     assert book.invoices["INV-1"].status == "draft"
 
@@ -115,12 +123,13 @@ def test_pull_sync_restores_memory_if_persistence_fails(tmp_path):
     hub.register(PaymentSource())
     app = create_secure_app(str(tmp_path / "bookkeeper.json"), connectors=hub)
     app.config.update(TESTING=True)
+    client = app.test_client()
+    setup_admin(client)
     app.config["SAVE_BOOKKEEPER"] = lambda: (_ for _ in ()).throw(RuntimeError("disk write failed"))
     book = app.config["BOOKKEEPER"]
 
-    with app.test_request_context("/sync-accounting", method="POST"):
-        response = app.view_functions["sync_accounting"]()
-        assert response.status_code in (302, 303)
+    response = client.post("/sync/accounting")
+    assert response.status_code in (302, 303)
 
     assert "PAY-ROLLBACK" not in book.payments
     latest = app.config["SYNC_RELIABILITY"].list_runs()[0]
