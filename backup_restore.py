@@ -47,9 +47,29 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _readonly_connect(path: Path) -> sqlite3.Connection:
+    # Backups are checkpointed before publication, so immutable read mode is
+    # appropriate and prevents verification itself from creating WAL/SHM files.
+    conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _checkpoint_database(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _reject_sqlite_sidecars(path: Path) -> None:
+    sidecars = [Path(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal")]
+    present = [p.name for p in sidecars if p.exists()]
+    if present:
+        raise ValueError(f"Backup contains unmanifested SQLite sidecar files: {present}")
+
+
 def _sqlite_integrity(path: Path) -> None:
     try:
-        with sqlite3.connect(path) as conn:
+        with _readonly_connect(path) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError as exc:
         raise ValueError(f"SQLite backup cannot be opened: {exc}") from exc
@@ -58,7 +78,7 @@ def _sqlite_integrity(path: Path) -> None:
 
 
 def _schema_version(path: Path) -> str | None:
-    with sqlite3.connect(path) as conn:
+    with _readonly_connect(path) as conn:
         try:
             row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         except sqlite3.DatabaseError:
@@ -67,14 +87,12 @@ def _schema_version(path: Path) -> str | None:
 
 
 def _audit_verification(path: Path):
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _readonly_connect(path) as conn:
         return verify_audit_chain(conn)
 
 
 def _evidence_rows(path: Path) -> list[dict[str, object]]:
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
+    with _readonly_connect(path) as conn:
         try:
             rows = conn.execute(
                 "SELECT evidence_id,sha256,data FROM source_documents ORDER BY evidence_id"
@@ -137,6 +155,8 @@ def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str
         snapshot = staging / DATABASE_NAME
         with sqlite3.connect(source_db) as source, sqlite3.connect(snapshot) as target:
             source.backup(target)
+        _checkpoint_database(snapshot)
+        _reject_sqlite_sidecars(snapshot)
 
         _sqlite_integrity(snapshot)
         audit = _audit_verification(snapshot)
@@ -190,6 +210,7 @@ def verify_backup(backup_dir: str | Path) -> BackupVerification:
         db_path = bundle / str(db_meta.get("path") or DATABASE_NAME)
         if not db_path.is_file():
             raise ValueError("Backup database is missing")
+        _reject_sqlite_sidecars(db_path)
         if db_path.stat().st_size != int(db_meta.get("size_bytes", -1)):
             raise ValueError("Backup database size does not match manifest")
         if _sha256_file(db_path) != db_meta.get("sha256"):
@@ -237,7 +258,7 @@ def verify_backup(backup_dir: str | Path) -> BackupVerification:
             audit_event_count=audit.event_count,
             evidence_file_count=len(expected_paths),
         )
-    except (ValueError, OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (ValueError, OSError, sqlite3.DatabaseError, json.JSONDecodeError, KeyError, TypeError) as exc:
         return BackupVerification(False, str(exc))
 
 
@@ -269,6 +290,10 @@ def _restore_rollback(
     rollback_db: Path,
     rollback_evidence: Path,
 ) -> None:
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(target_db) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
     if target_db.exists():
         target_db.unlink()
     if target_evidence.exists():
@@ -317,13 +342,13 @@ def restore_backup(
             staged_evidence.mkdir(parents=True)
 
         _relocate_source_document_paths(staged_db, staged_evidence, target_evidence)
+        _checkpoint_database(staged_db)
         _sqlite_integrity(staged_db)
         audit = _audit_verification(staged_db)
         if not audit.valid:
             raise ValueError(f"Staged restore audit chain invalid: {audit.detail}")
         _verify_source_documents(staged_db, staged_evidence)
 
-        # Ensure chain controls are installed, then append a restore receipt.
         AuditIntegrityStore(staged_db)
         with sqlite3.connect(staged_db) as conn:
             conn.row_factory = sqlite3.Row
@@ -338,6 +363,8 @@ def restore_backup(
                 },
                 actor,
             )
+        _checkpoint_database(staged_db)
+        _reject_sqlite_sidecars(staged_db)
 
         if rollback_db.exists():
             rollback_db.unlink()
