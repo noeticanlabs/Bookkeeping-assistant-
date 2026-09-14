@@ -284,8 +284,8 @@ class SettlementStore:
 
         if missing or (settlement.deposit_id and settlement.deposit_id not in book.deposits):
             status = "unknown"
-        elif settlement.deposit_id is not None and not payment_ids:
-            status = "unknown"
+        elif not payment_ids:
+            status = "open"
         elif component_difference is not None and component_difference != 0:
             status = "difference"
         elif settlement.deposit_id is None:
