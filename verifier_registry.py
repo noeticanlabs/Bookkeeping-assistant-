@@ -109,18 +109,18 @@ def verify_invoice_balances(book) -> list[VerificationResult]:
 
 
 def verify_processor_settlements(book) -> list[VerificationResult]:
-    """V-PROCESSOR-SETTLEMENT: payment - fee must equal linked net deposit."""
+    """V-PROCESSOR-SETTLEMENT: legacy single payment - fee = linked net deposit."""
     results: list[VerificationResult] = []
     for deposit in book.deposits.values():
         if not deposit.payment_id:
             results.append(VerificationResult(
                 verifier_id="V-PROCESSOR-SETTLEMENT",
-                title="Processor settlement identity",
+                title="Single-payment processor settlement identity",
                 status=UNKNOWN,
                 severity="S2",
                 object_type="deposit",
                 object_id=deposit.id,
-                summary="Deposit has no linked customer payment, so settlement cannot be verified",
+                summary="Deposit has no direct payment link; it may require aggregate settlement reconciliation",
                 evidence={
                     "deposit_amount": _money(deposit.amount),
                     "processor_fee": _money(deposit.processor_fee),
@@ -133,7 +133,7 @@ def verify_processor_settlements(book) -> list[VerificationResult]:
         if payment is None:
             results.append(VerificationResult(
                 verifier_id="V-PROCESSOR-SETTLEMENT",
-                title="Processor settlement identity",
+                title="Single-payment processor settlement identity",
                 status=FAIL,
                 severity="S3",
                 object_type="deposit",
@@ -151,7 +151,7 @@ def verify_processor_settlements(book) -> list[VerificationResult]:
         ok = difference == 0
         results.append(VerificationResult(
             verifier_id="V-PROCESSOR-SETTLEMENT",
-            title="Processor settlement identity",
+            title="Single-payment processor settlement identity",
             status=PASS if ok else FAIL,
             severity="S3" if not ok else "S0",
             object_type="deposit",
@@ -159,7 +159,7 @@ def verify_processor_settlements(book) -> list[VerificationResult]:
             summary=(
                 "Gross payment less processor fee agrees with net deposit"
                 if ok else
-                "Payment, fee, and deposit do not reconcile under the current settlement model"
+                "Payment, fee, and deposit do not reconcile under the single-payment settlement model"
             ),
             evidence={
                 "payment_id": payment.id,
@@ -169,6 +169,50 @@ def verify_processor_settlements(book) -> list[VerificationResult]:
                 "difference": _money(difference),
             },
             review_required=not ok,
+        ))
+    return results
+
+
+def verify_aggregate_settlements(book, settlement_store) -> list[VerificationResult]:
+    """V-SETTLEMENT-RECONCILIATION: payments - fees - refunds - chargebacks = deposit."""
+    results: list[VerificationResult] = []
+    for settlement in settlement_store.list():
+        recon = settlement_store.reconcile(settlement.settlement_id, book)
+        if recon.status == "reconciled":
+            status, severity, review = PASS, "S0", False
+            summary = "Aggregate processor settlement reconciles exactly to the linked bank deposit"
+        elif recon.status == "difference":
+            status, severity, review = FAIL, "S3", True
+            summary = "Aggregate processor settlement does not reconcile to the linked bank deposit"
+        elif recon.status == "unknown":
+            status, severity, review = UNKNOWN, "S2", True
+            summary = "Settlement cannot be verified because required payment or deposit evidence is missing"
+        else:
+            status, severity, review = UNKNOWN, "S1", True
+            summary = "Settlement is still open because no bank deposit has been linked"
+
+        results.append(VerificationResult(
+            verifier_id="V-SETTLEMENT-RECONCILIATION",
+            title="Aggregate processor settlement identity",
+            status=status,
+            severity=severity,
+            object_type="settlement",
+            object_id=recon.settlement_id,
+            summary=summary,
+            evidence={
+                "provider": settlement.provider,
+                "payment_ids": ", ".join(recon.payment_ids) or "none",
+                "gross_payments": _money(recon.gross_payments),
+                "fees": _money(recon.fees),
+                "refunds": _money(recon.refunds),
+                "chargebacks": _money(recon.chargebacks),
+                "expected_net": _money(recon.expected_net),
+                "deposit_id": recon.deposit_id or "none",
+                "actual_deposit": _money(recon.actual_deposit) if recon.actual_deposit is not None else "unknown",
+                "difference": _money(recon.difference) if recon.difference is not None else "unknown",
+                "missing_payment_ids": ", ".join(recon.missing_payment_ids) or "none",
+            },
+            review_required=review,
         ))
     return results
 
@@ -293,10 +337,15 @@ def verify_job_margins(book) -> list[VerificationResult]:
     return results
 
 
-def default_registry() -> VerifierRegistry:
+def default_registry(settlement_store=None) -> VerifierRegistry:
     registry = VerifierRegistry()
     registry.register("V-INVOICE-BALANCE", verify_invoice_balances)
     registry.register("V-PROCESSOR-SETTLEMENT", verify_processor_settlements)
+    if settlement_store is not None:
+        registry.register(
+            "V-SETTLEMENT-RECONCILIATION",
+            lambda book: verify_aggregate_settlements(book, settlement_store),
+        )
     registry.register("V-WORK-ORDER-LINK", verify_work_order_links)
     registry.register("V-VENDOR-BILL-TREATMENT", verify_vendor_bill_treatment)
     registry.register("V-JOB-MARGIN-CALC", verify_job_margins)
