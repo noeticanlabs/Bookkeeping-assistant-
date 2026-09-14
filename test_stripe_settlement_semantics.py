@@ -166,6 +166,18 @@ def test_stripe_manual_or_instant_payout_is_not_guessed(monkeypatch):
     assert "does not expose deterministic" in evidence.composition_note
 
 
+def test_reporting_category_prevents_partial_capture_reversal_from_being_mislabeled_refund():
+    connector = StripeSettlementConnector("sk_test")
+
+    kind = connector._component_kind(
+        "partial_capture_reversal",
+        "refund",
+        {"id": "ch_1", "object": "charge"},
+    )
+
+    assert kind == "other"
+
+
 def test_unrecognized_stripe_balance_category_stays_explicit_other(monkeypatch):
     connector = StripeSettlementConnector("sk_test")
 
