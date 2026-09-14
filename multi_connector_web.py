@@ -109,6 +109,35 @@ def install_multi_connector_routes(app) -> None:
                 pass
             flash(f"{sname} {label} sync failed: {exc}", "error")
 
+    def _pull_settlements(source) -> None:
+        sync = app.config["SYNC_RELIABILITY"]
+        settlement_store = app.config.get("SETTLEMENT_STORE")
+        sid = connector_id(source)
+        sname = connector_name(source)
+        run_id = sync.start_run(sid, sname, "settlements.read", "pull")
+        try:
+            if settlement_store is None:
+                raise RuntimeError("Settlement store is not configured")
+            rows = source.pull_settlements()
+            result = settlement_store.import_evidence(rows)
+            sync.finish_run(
+                run_id, added=result.added, skipped=result.skipped,
+                detail={"errors": list(result.errors)},
+            )
+            report("settlements", result, sname)
+            try:
+                hub.emit("settlements.read.imported", {
+                    "source": sname, "connector_id": sid, "added": result.added, "skipped": result.skipped,
+                })
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                sync.fail_run(run_id, str(exc))
+            except ValueError:
+                pass
+            flash(f"{sname} settlement sync failed: {exc}", "error")
+
     def sync_field_service_multi():
         sources = hub.work_order_sources()
         if not sources:
@@ -121,13 +150,16 @@ def install_multi_connector_routes(app) -> None:
     def sync_accounting_multi():
         payment_sources = hub.payment_sources()
         deposit_sources = hub.deposit_sources()
-        if not payment_sources and not deposit_sources:
+        settlement_sources = hub.settlement_sources()
+        if not payment_sources and not deposit_sources and not settlement_sources:
             flash("No live financial-evidence source is configured", "error")
             return redirect(url_for("dashboard"))
         for source in payment_sources:
             _pull(source, "payments.read", source.pull_payments, import_payments, "payments")
+        for source in settlement_sources:
+            _pull_settlements(source)
         for source in deposit_sources:
-            _pull(source, "deposits.read", source.pull_deposits, import_deposits, "deposits")
+            _pull(source, "deposits.read", source.pull_deposits, import_deposits, "bank deposits")
         return redirect(url_for("dashboard"))
 
     def issue_invoice_multi(invoice_id: str):
