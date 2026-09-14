@@ -1,0 +1,363 @@
+"""Verified backup/restore for the local-first Bookkeeper Assistant.
+
+A backup bundle contains a consistent SQLite snapshot, the evidence vault, and a
+manifest binding every file plus the audit-chain head. Restore never trusts a
+bundle merely because it can be opened: hashes, SQLite integrity, audit-chain
+integrity, and source-document evidence hashes are verified before live state is
+replaced.
+
+The credential-encryption key is intentionally NOT stored in the bundle. It must
+be backed up separately and remain stable if encrypted connector credentials are
+to be usable after restore.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sqlite3
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from audit_integrity import AuditIntegrityStore, append_audit_row, verify_audit_chain
+
+BACKUP_FORMAT_VERSION = 1
+MANIFEST_NAME = "manifest.json"
+DATABASE_NAME = "bookkeeper.sqlite3"
+EVIDENCE_DIR_NAME = "evidence"
+
+
+@dataclass(frozen=True)
+class BackupVerification:
+    valid: bool
+    detail: str
+    audit_head_hash: str | None = None
+    audit_event_count: int = 0
+    evidence_file_count: int = 0
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_integrity(path: Path) -> None:
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"SQLite backup cannot be opened: {exc}") from exc
+    if not row or str(row[0]).lower() != "ok":
+        raise ValueError(f"SQLite integrity_check failed: {row[0] if row else 'no result'}")
+
+
+def _schema_version(path: Path) -> str | None:
+    with sqlite3.connect(path) as conn:
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        except sqlite3.DatabaseError:
+            return None
+    return str(row[0]) if row else None
+
+
+def _audit_verification(path: Path):
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        return verify_audit_chain(conn)
+
+
+def _evidence_rows(path: Path) -> list[dict[str, object]]:
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT evidence_id,sha256,data FROM source_documents ORDER BY evidence_id").fetchall()
+        except sqlite3.DatabaseError:
+            return []
+    output: list[dict[str, object]] = []
+    for row in rows:
+        data = json.loads(row["data"])
+        output.append({"evidence_id": row["evidence_id"], "sha256": row["sha256"], "data": data})
+    return output
+
+
+def _copy_evidence_and_manifest_rows(evidence_dir: Path, target: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not evidence_dir.exists():
+        return rows
+    for source in sorted(p for p in evidence_dir.rglob("*") if p.is_file()):
+        relative = source.relative_to(evidence_dir)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        rows.append({
+            "path": relative.as_posix(),
+            "size_bytes": destination.stat().st_size,
+            "sha256": _sha256_file(destination),
+        })
+    return rows
+
+
+def _verify_source_documents_against_bundle(db_path: Path, evidence_root: Path) -> None:
+    files_by_hash: dict[str, Path] = {}
+    if evidence_root.exists():
+        for path in evidence_root.rglob("*"):
+            if path.is_file():
+                files_by_hash[_sha256_file(path)] = path
+    for row in _evidence_rows(db_path):
+        expected = str(row["sha256"])
+        if expected not in files_by_hash:
+            raise ValueError(
+                f"Evidence {row['evidence_id']} with SHA-256 {expected} is missing from backup evidence vault"
+            )
+
+
+def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str | Path) -> Path:
+    """Create and self-verify one backup directory.
+
+    SQLite's online backup API is used so WAL-mode source databases are captured
+    consistently while open.
+    """
+    source_db = Path(db_path)
+    source_evidence = Path(evidence_dir)
+    destination = Path(backup_dir)
+    if destination.exists():
+        raise FileExistsError(f"Backup destination already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    try:
+        snapshot = staging / DATABASE_NAME
+        with sqlite3.connect(source_db) as source, sqlite3.connect(snapshot) as target:
+            source.backup(target)
+
+        _sqlite_integrity(snapshot)
+        audit = _audit_verification(snapshot)
+        if not audit.valid:
+            raise ValueError(
+                f"Source audit chain is invalid at sequence {audit.error_seq}: {audit.detail}"
+            )
+
+        evidence_root = staging / EVIDENCE_DIR_NAME
+        evidence_rows = _copy_evidence_and_manifest_rows(source_evidence, evidence_root)
+        _verify_source_documents_against_bundle(snapshot, evidence_root)
+
+        manifest = {
+            "format_version": BACKUP_FORMAT_VERSION,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "schema_version": _schema_version(snapshot),
+            "credential_key_included": False,
+            "database": {
+                "path": DATABASE_NAME,
+                "size_bytes": snapshot.stat().st_size,
+                "sha256": _sha256_file(snapshot),
+            },
+            "audit": {
+                "event_count": audit.event_count,
+                "head_hash": audit.head_hash,
+            },
+            "evidence": evidence_rows,
+        }
+        (staging / MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+        verification = verify_backup(staging)
+        if not verification.valid:
+            raise ValueError(f"New backup failed self-verification: {verification.detail}")
+        os.replace(staging, destination)
+        return destination
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def verify_backup(backup_dir: str | Path) -> BackupVerification:
+    bundle = Path(backup_dir)
+    try:
+        manifest_path = bundle / MANIFEST_NAME
+        if not manifest_path.is_file():
+            raise ValueError("Backup manifest is missing")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("format_version") != BACKUP_FORMAT_VERSION:
+            raise ValueError(f"Unsupported backup format version: {manifest.get('format_version')}")
+
+        db_meta = manifest.get("database") or {}
+        db_path = bundle / str(db_meta.get("path") or DATABASE_NAME)
+        if not db_path.is_file():
+            raise ValueError("Backup database is missing")
+        if db_path.stat().st_size != int(db_meta.get("size_bytes", -1)):
+            raise ValueError("Backup database size does not match manifest")
+        if _sha256_file(db_path) != db_meta.get("sha256"):
+            raise ValueError("Backup database SHA-256 does not match manifest")
+
+        evidence_root = bundle / EVIDENCE_DIR_NAME
+        expected_paths: set[str] = set()
+        for row in manifest.get("evidence") or []:
+            relative = str(row["path"])
+            expected_paths.add(relative)
+            path = evidence_root / relative
+            if not path.is_file():
+                raise ValueError(f"Evidence file is missing: {relative}")
+            if path.stat().st_size != int(row["size_bytes"]):
+                raise ValueError(f"Evidence file size mismatch: {relative}")
+            if _sha256_file(path) != row["sha256"]:
+                raise ValueError(f"Evidence file SHA-256 mismatch: {relative}")
+
+        actual_paths = {
+            path.relative_to(evidence_root).as_posix()
+            for path in evidence_root.rglob("*")
+            if path.is_file()
+        } if evidence_root.exists() else set()
+        unexpected = actual_paths - expected_paths
+        if unexpected:
+            raise ValueError(f"Backup contains unmanifested evidence files: {sorted(unexpected)}")
+
+        _sqlite_integrity(db_path)
+        audit = _audit_verification(db_path)
+        if not audit.valid:
+            raise ValueError(
+                f"Audit chain verification failed at sequence {audit.error_seq}: {audit.detail}"
+            )
+        audit_meta = manifest.get("audit") or {}
+        if audit.head_hash != audit_meta.get("head_hash"):
+            raise ValueError("Audit-chain head does not match backup manifest")
+        if audit.event_count != int(audit_meta.get("event_count", -1)):
+            raise ValueError("Audit event count does not match backup manifest")
+
+        _verify_source_documents_against_bundle(db_path, evidence_root)
+        return BackupVerification(
+            True,
+            "Backup integrity verified",
+            audit_head_hash=audit.head_hash,
+            audit_event_count=audit.event_count,
+            evidence_file_count=len(expected_paths),
+        )
+    except (ValueError, OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        return BackupVerification(False, str(exc))
+
+
+def _relocate_source_document_paths(db_path: Path, evidence_dir: Path) -> None:
+    files_by_hash: dict[str, Path] = {}
+    for path in evidence_dir.rglob("*") if evidence_dir.exists() else []:
+        if path.is_file():
+            files_by_hash[_sha256_file(path)] = path
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT evidence_id,sha256,data FROM source_documents").fetchall()
+        for row in rows:
+            target = files_by_hash.get(row["sha256"])
+            if target is None:
+                raise ValueError(f"Restored evidence file missing for {row['evidence_id']}")
+            data = json.loads(row["data"])
+            data["stored_path"] = str(target)
+            conn.execute(
+                "UPDATE source_documents SET data=? WHERE evidence_id=?",
+                (json.dumps(data, default=str, separators=(",", ":")), row["evidence_id"]),
+            )
+
+
+def restore_backup(
+    backup_dir: str | Path,
+    target_db_path: str | Path,
+    target_evidence_dir: str | Path,
+    *,
+    actor: str = "administrator",
+) -> None:
+    """Restore a verified bundle into a stopped/local application installation.
+
+    The bundle is fully verified before the existing live files are touched. The
+    restore then stages a second copy, relocates SourceDocument paths, re-verifies
+    SQLite and audit integrity, and finally swaps it into place. Existing live
+    state is retained as a rollback copy until the new state has been verified.
+    """
+    verification = verify_backup(backup_dir)
+    if not verification.valid:
+        raise ValueError(f"Restore refused: {verification.detail}")
+
+    bundle = Path(backup_dir)
+    target_db = Path(target_db_path)
+    target_evidence = Path(target_evidence_dir)
+    target_db.parent.mkdir(parents=True, exist_ok=True)
+    target_evidence.parent.mkdir(parents=True, exist_ok=True)
+
+    stage_root = Path(tempfile.mkdtemp(prefix=".bookkeeper-restore-", dir=target_db.parent))
+    staged_db = stage_root / DATABASE_NAME
+    staged_evidence = stage_root / EVIDENCE_DIR_NAME
+    rollback_db = target_db.with_name(target_db.name + ".pre-restore")
+    rollback_evidence = target_evidence.with_name(target_evidence.name + ".pre-restore")
+
+    try:
+        shutil.copy2(bundle / DATABASE_NAME, staged_db)
+        if (bundle / EVIDENCE_DIR_NAME).exists():
+            shutil.copytree(bundle / EVIDENCE_DIR_NAME, staged_evidence)
+        else:
+            staged_evidence.mkdir(parents=True)
+
+        _relocate_source_document_paths(staged_db, target_evidence)
+        _sqlite_integrity(staged_db)
+        audit = _audit_verification(staged_db)
+        if not audit.valid:
+            raise ValueError(f"Staged restore audit chain invalid: {audit.detail}")
+
+        # Append a restore receipt after validation. The target paths themselves
+        # are operational metadata; the financial/audit history remains intact.
+        integrity = AuditIntegrityStore(staged_db)
+        with sqlite3.connect(staged_db) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            append_audit_row(
+                conn,
+                "system.restore.completed",
+                "SYSTEM:BACKUP",
+                {
+                    "backup_audit_head": verification.audit_head_hash,
+                    "restored_at": datetime.now(timezone.utc).isoformat(),
+                },
+                actor,
+            )
+
+        # Swap only after all staged checks have passed. Preserve the old state
+        # long enough to roll back if the filesystem swap itself fails.
+        if rollback_db.exists():
+            rollback_db.unlink()
+        if rollback_evidence.exists():
+            shutil.rmtree(rollback_evidence)
+        if target_db.exists():
+            os.replace(target_db, rollback_db)
+        if target_evidence.exists():
+            os.replace(target_evidence, rollback_evidence)
+        try:
+            os.replace(staged_db, target_db)
+            os.replace(staged_evidence, target_evidence)
+        except Exception:
+            if target_db.exists():
+                target_db.unlink()
+            if target_evidence.exists():
+                shutil.rmtree(target_evidence, ignore_errors=True)
+            if rollback_db.exists():
+                os.replace(rollback_db, target_db)
+            if rollback_evidence.exists():
+                os.replace(rollback_evidence, target_evidence)
+            raise
+
+        # Verify the installed result before deleting rollback copies.
+        _sqlite_integrity(target_db)
+        installed_audit = _audit_verification(target_db)
+        if not installed_audit.valid:
+            raise ValueError(f"Installed restore audit chain invalid: {installed_audit.detail}")
+        _verify_source_documents_against_bundle(target_db, target_evidence)
+
+        if rollback_db.exists():
+            rollback_db.unlink()
+        if rollback_evidence.exists():
+            shutil.rmtree(rollback_evidence)
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
