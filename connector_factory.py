@@ -59,8 +59,8 @@ def default_connector_hub() -> ConnectorHub:
         ))
 
     if os.environ.get("STRIPE_SECRET_KEY"):
-        from live_connectors import StripeConnector
-        hub.register(StripeConnector(secret_key=os.environ["STRIPE_SECRET_KEY"]))
+        from stripe_settlement_connector import StripeSettlementConnector
+        hub.register(StripeSettlementConnector(secret_key=os.environ["STRIPE_SECRET_KEY"]))
 
     yardi_required = (
         os.environ.get("YARDI_BASE_URL"),
