@@ -25,6 +25,7 @@ def test_stripe_connector_reconstructs_automatic_payout_from_balance_transaction
                 "data": [{
                     "id": "po_1", "amount": 9700, "description": "Sep payout",
                     "automatic": True, "method": "standard",
+                    "reconciliation_status": "completed",
                 }],
                 "has_more": False,
             }
@@ -115,6 +116,30 @@ def test_stripe_payout_component_pull_paginates_and_keeps_exact_categories(monke
     assert sum((c.net for c in evidence.components), Decimal("0")) == Decimal("87")
 
 
+def test_stripe_reconciliation_in_progress_waits_instead_of_guessing(monkeypatch):
+    connector = StripeSettlementConnector("sk_test")
+
+    def fake_get(path, params=None):
+        if path == "payouts":
+            return {
+                "data": [{
+                    "id": "po_pending", "amount": 9700, "automatic": True,
+                    "method": "standard", "reconciliation_status": "in_progress",
+                }],
+                "has_more": False,
+            }
+        if path == "balance_transactions":
+            raise AssertionError("in-progress reconciliation must wait for Stripe")
+        raise AssertionError(path)
+
+    monkeypatch.setattr(connector, "_get", fake_get)
+    evidence = connector.pull_settlements()[0]
+
+    assert evidence.components == ()
+    assert evidence.composition_complete is False
+    assert "still in progress" in evidence.composition_note
+
+
 def test_stripe_manual_or_instant_payout_is_not_guessed(monkeypatch):
     connector = StripeSettlementConnector("sk_test")
 
@@ -124,6 +149,7 @@ def test_stripe_manual_or_instant_payout_is_not_guessed(monkeypatch):
                 "data": [{
                     "id": "po_manual", "amount": 5000, "automatic": False,
                     "method": "instant", "description": "Instant payout",
+                    "reconciliation_status": "not_applicable",
                 }],
                 "has_more": False,
             }
