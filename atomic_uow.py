@@ -10,26 +10,20 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
-import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from app import Cost
+from audit_integrity import append_audit_row
 from document_intake import record_approved_document
 from sqlite_store import _connect, _json, initialize
 
 
 def _audit_row(conn: sqlite3.Connection, event_type: str, evidence_id: str,
                payload: dict[str, object], actor: str) -> None:
-    conn.execute(
-        "INSERT INTO audit_events(event_id,event_type,evidence_id,actor,created_at,data) VALUES(?,?,?,?,?,?)",
-        (
-            f"AUD-{uuid.uuid4().hex[:16]}", event_type, evidence_id, actor,
-            datetime.now(timezone.utc).isoformat(), _json(payload),
-        ),
-    )
+    append_audit_row(conn, event_type, evidence_id, payload, actor)
 
 
 def _persist_book(conn: sqlite3.Connection, book) -> None:
