@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Settlement Reconciliation</title>
+  <style>
+    body { font-family: sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
+    .card { border:1px solid #ddd; border-radius:8px; padding:1rem; margin:1rem 0; }
+    form { display:flex; flex-wrap:wrap; gap:.5rem; align-items:end; margin:.5rem 0; }
+    input, select, button { padding:.5rem; }
+    table { width:100%; border-collapse:collapse; margin:.75rem 0; }
+    th, td { text-align:left; padding:.55rem; border-bottom:1px solid #ddd; vertical-align:top; }
+    .reconciled { font-weight:700; }
+    .difference { font-weight:700; }
+    .unknown { font-weight:700; }
+    code { overflow-wrap:anywhere; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('exception_dashboard') }}">Exceptions</a>
+    <a href="{{ url_for('verification_dashboard') }}">Verifications</a>
+    <a href="{{ url_for('sync_status') }}">Sync Status</a>
+  </nav>
+
+  <h1>Settlement Reconciliation</h1>
+  <p>Prove processor payouts from their underlying payments and explicit deductions. Unknown differences stay visible; there is no generic balancing adjustment.</p>
+
+  <div class="card">
+    <h2>New settlement</h2>
+    <form method="post" action="{{ url_for('create_settlement') }}">
+      <label>Settlement ID<br><input name="settlement_id" required></label>
+      <label>Provider<br><input name="provider" placeholder="Stripe" required></label>
+      <label>Reference<br><input name="reference" placeholder="payout / batch reference"></label>
+      <button>Create</button>
+    </form>
+  </div>
+
+  {% for row in rows %}
+    {% set s = row.settlement %}
+    {% set r = row.reconciliation %}
+    <div class="card">
+      <h2>{{ s.settlement_id }} — {{ s.provider }}</h2>
+      <p>Status: <strong class="{{ r.status }}">{{ r.status|upper }}</strong>{% if s.reference %} · {{ s.reference }}{% endif %}</p>
+
+      <table>
+        <tr><th>Gross payments</th><td>{{ r.gross_payments }}</td></tr>
+        <tr><th>Fees</th><td>-{{ r.fees }}</td></tr>
+        <tr><th>Refunds</th><td>-{{ r.refunds }}</td></tr>
+        <tr><th>Chargebacks</th><td>-{{ r.chargebacks }}</td></tr>
+        <tr><th>Expected net</th><td><strong>{{ r.expected_net }}</strong></td></tr>
+        <tr><th>Bank deposit</th><td>{{ r.actual_deposit if r.actual_deposit is not none else '—' }}</td></tr>
+        <tr><th>Difference</th><td>{{ r.difference if r.difference is not none else '—' }}</td></tr>
+      </table>
+
+      <p><strong>Payments:</strong> {{ r.payment_ids|join(', ') if r.payment_ids else 'none' }}</p>
+      {% if row.adjustments %}
+        <p><strong>Adjustments:</strong>
+        {% for a in row.adjustments %}
+          {{ a.adjustment_id }} ({{ a.kind }} {{ a.amount }}){% if not loop.last %}, {% endif %}
+        {% endfor %}
+        </p>
+      {% endif %}
+
+      <div class="grid">
+        <div>
+          <strong>Add payment</strong>
+          <form method="post" action="{{ url_for('add_settlement_payment', settlement_id=s.settlement_id) }}">
+            <select name="payment_id" required>
+              <option value="">Choose payment</option>
+              {% for payment in payments %}
+                <option value="{{ payment.id }}">{{ payment.id }} — {{ payment.amount }}</option>
+              {% endfor %}
+            </select>
+            <button>Add</button>
+          </form>
+        </div>
+
+        <div>
+          <strong>Add explicit deduction</strong>
+          <form method="post" action="{{ url_for('add_settlement_adjustment', settlement_id=s.settlement_id) }}">
+            <input name="adjustment_id" placeholder="fee/refund ID" required>
+            <select name="kind" required>
+              <option value="fee">Fee</option>
+              <option value="refund">Refund</option>
+              <option value="chargeback">Chargeback</option>
+            </select>
+            <input name="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required>
+            <input name="reference" placeholder="Reference">
+            <button>Add</button>
+          </form>
+        </div>
+
+        <div>
+          <strong>Link bank deposit</strong>
+          <form method="post" action="{{ url_for('link_settlement_deposit', settlement_id=s.settlement_id) }}">
+            <select name="deposit_id" required>
+              <option value="">Choose deposit</option>
+              {% for deposit in deposits %}
+                <option value="{{ deposit.id }}">{{ deposit.id }} — {{ deposit.amount }}</option>
+              {% endfor %}
+            </select>
+            <button>Link & reconcile</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="card"><strong>No settlements yet.</strong></div>
+  {% endfor %}
+</body>
+</html>
