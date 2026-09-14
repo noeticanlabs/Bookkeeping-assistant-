@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from app import BankDeposit, Bookkeeper, Payment
-from settlements import SettlementStore
+from settlements import SettlementEvidence, SettlementStore
 from verifier_registry import FAIL, PASS, UNKNOWN, default_registry
 
 
@@ -80,6 +80,60 @@ def test_open_or_incomplete_settlement_is_unknown_not_false_failure(tmp_path):
     result = _verification(default_registry(store).run(book), "SET-OPEN")
     assert result.status == UNKNOWN
     assert result.evidence["deposit_id"] == "none"
+
+
+def test_imported_payout_without_allocated_payments_stays_open_not_failed(tmp_path):
+    book = Bookkeeper()
+    store = SettlementStore(tmp_path / "bookkeeper.sqlite3")
+    imported = store.import_evidence([
+        SettlementEvidence("STRIPE-SET:po_1", "Stripe", Decimal("97"), "po_1")
+    ])
+
+    assert imported.added == 1
+    recon = store.reconcile("STRIPE-SET:po_1", book)
+    assert recon.reported_net == Decimal("97")
+    assert recon.status == "open"
+    assert _verification(default_registry(store).run(book), "STRIPE-SET:po_1").status == UNKNOWN
+
+
+def test_component_difference_is_separate_from_bank_difference(tmp_path):
+    book = Bookkeeper()
+    book.add_payment(Payment("PAY-1", Decimal("100")))
+    book.add_deposit(BankDeposit("DEP-1", Decimal("97")))
+    store = SettlementStore(tmp_path / "bookkeeper.sqlite3")
+    store.import_evidence([
+        SettlementEvidence("SET-1", "Stripe", Decimal("97"), "po_1")
+    ])
+    store.add_payment("SET-1", "PAY-1", book)
+    store.add_adjustment("FEE-1", "SET-1", "fee", Decimal("4"))
+    store.link_deposit("SET-1", "DEP-1", book)
+
+    recon = store.reconcile("SET-1", book)
+    assert recon.expected_net == Decimal("96")
+    assert recon.reported_net == Decimal("97")
+    assert recon.component_difference == Decimal("1")
+    assert recon.bank_difference == Decimal("0")
+    assert recon.status == "difference"
+
+
+def test_bank_difference_is_separate_from_processor_component_difference(tmp_path):
+    book = Bookkeeper()
+    book.add_payment(Payment("PAY-1", Decimal("100")))
+    book.add_deposit(BankDeposit("DEP-1", Decimal("96")))
+    store = SettlementStore(tmp_path / "bookkeeper.sqlite3")
+    store.import_evidence([
+        SettlementEvidence("SET-1", "Stripe", Decimal("97"), "po_1")
+    ])
+    store.add_payment("SET-1", "PAY-1", book)
+    store.add_adjustment("FEE-1", "SET-1", "fee", Decimal("3"))
+    store.link_deposit("SET-1", "DEP-1", book)
+
+    recon = store.reconcile("SET-1", book)
+    assert recon.expected_net == Decimal("97")
+    assert recon.reported_net == Decimal("97")
+    assert recon.component_difference == Decimal("0")
+    assert recon.bank_difference == Decimal("-1")
+    assert recon.status == "difference"
 
 
 def test_payment_cannot_be_counted_in_two_settlements(tmp_path):
