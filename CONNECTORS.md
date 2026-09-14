@@ -10,10 +10,10 @@ A company may connect multiple systems at the same time. For example:
 - Housecall Pro -> `work_orders.read`
 - QuickBooks Online -> `payments.read`, `deposits.read`
 - Xero -> `payments.read`, `invoices.write`
-- Stripe -> `payments.read`, `deposits.read`
+- Stripe -> `payments.read`, `settlements.read`
 - OpenAI Documents -> `documents.extract`
 
-Pulled payments/deposits remain unmatched evidence until Bookkeeper Assistant's deterministic matching/review flow accepts them.
+Pulled evidence remains non-authoritative until Bookkeeper Assistant's deterministic matching/review flow establishes its relationships.
 
 ## Xero
 
@@ -33,7 +33,7 @@ XERO_CONTACT_IDS='{"Smith Residence":"xero-contact-guid"}'
 
 Invoice export deliberately requires an explicit customer -> Xero `ContactID` map. The adapter does not guess contact identity from names.
 
-The environment-based adapter expects a current OAuth bearer token. OAuth authorization, refresh-token rotation and encrypted credential storage belong in the connection-management layer, not in bookkeeping state.
+The environment-based adapter expects a current OAuth bearer token. The in-app Connection Manager supports OAuth authorization, encrypted credential storage, and refresh-token management.
 
 ## Stripe
 
@@ -41,12 +41,51 @@ The environment-based adapter expects a current OAuth bearer token. OAuth author
 STRIPE_SECRET_KEY=sk_live_...
 ```
 
-The adapter imports:
+The managed/environment Stripe adapter imports:
 
 - succeeded PaymentIntents -> `Payment` evidence
-- paid Payouts -> `BankDeposit` evidence
+- paid Payouts -> `SettlementEvidence`
+
+A Stripe payout is **not** treated as a bank deposit. It is processor-reported settlement evidence. The actual deposit must come independently from a bank/accounting source or manual/CSV bank evidence.
+
+The aggregate settlement identity is:
+
+```text
+Gross customer payments
+- processor fees
+- refunds
+- chargebacks
+= calculated net settlement
+```
+
+Bookkeeper Assistant can then compare:
+
+```text
+calculated net settlement
+      ?=
+processor-reported payout
+      ?=
+independently observed bank deposit
+```
+
+There is intentionally no generic balancing adjustment. An unexplained difference remains visible for review.
 
 Stripe amounts are converted from minor currency units to Bookkeeper Assistant decimal amounts. The current implementation assumes a two-decimal currency; multi-currency/zero-decimal handling must be added before those accounts are enabled.
+
+## Settlement reconciliation
+
+The `/settlements` workflow lets a bookkeeper assemble one processor settlement from:
+
+- one or more customer payments,
+- explicit processor fees,
+- explicit refunds,
+- explicit chargebacks,
+- optional processor-reported payout evidence,
+- one independent bank deposit.
+
+A payment can belong to only one aggregate settlement. A bank deposit can belong to only one aggregate settlement, and a deposit already matched directly to one payment cannot simultaneously be reused as an aggregate payout deposit.
+
+`settlements.read` is an idempotent safe-pull capability and can participate in scheduled synchronization/backoff. It is separate from `deposits.read` so processor data cannot silently substitute for independent bank evidence.
 
 ## ServiceTitan
 
@@ -85,6 +124,8 @@ JOBBER_ACCESS_TOKEN=...
 JOBBER_GRAPHQL_VERSION=2025-04-16
 ```
 
+The in-app Connection Manager can also use Jobber OAuth/PKCE and encrypted refresh-token storage.
+
 ## Housecall Pro
 
 ```bash
@@ -99,7 +140,9 @@ QBO_ACCESS_TOKEN=...
 QBO_SANDBOX=0
 ```
 
-QuickBooks currently supplies Payment and Deposit evidence only.
+QuickBooks currently supplies Payment and Deposit evidence. Its Deposit evidence can provide the accounting/bank side of settlement reconciliation when appropriate; direct bank CSV/manual evidence remains available as well.
+
+The in-app Connection Manager supports QuickBooks OAuth and encrypted token refresh.
 
 ## OpenAI document extraction
 
@@ -114,4 +157,4 @@ OpenAI extracts proposals only. It never directly mutates bookkeeping state.
 
 Do not put live OAuth tokens, refresh tokens, API keys, or secrets into CompanyProfile fields, Git, source code, audit events, or provenance records.
 
-The current environment loader is appropriate for development and controlled deployments. A company-facing Connect/Disconnect UI requires a dedicated encrypted credential store and OAuth callback/refresh management.
+The application includes an encrypted Connection Manager when `BOOKKEEPER_CREDENTIAL_KEY` is configured. Environment-based connector setup remains available for development and controlled deployments.
