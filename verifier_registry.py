@@ -174,22 +174,27 @@ def verify_processor_settlements(book) -> list[VerificationResult]:
 
 
 def verify_aggregate_settlements(book, settlement_store) -> list[VerificationResult]:
-    """V-SETTLEMENT-RECONCILIATION: payments - fees - refunds - chargebacks = deposit."""
+    """V-SETTLEMENT-RECONCILIATION: prove components -> processor payout -> bank deposit."""
     results: list[VerificationResult] = []
     for settlement in settlement_store.list():
         recon = settlement_store.reconcile(settlement.settlement_id, book)
         if recon.status == "reconciled":
             status, severity, review = PASS, "S0", False
-            summary = "Aggregate processor settlement reconciles exactly to the linked bank deposit"
+            summary = "Transaction components, processor-reported payout, and bank deposit reconcile"
         elif recon.status == "difference":
             status, severity, review = FAIL, "S3", True
-            summary = "Aggregate processor settlement does not reconcile to the linked bank deposit"
+            if recon.component_difference not in {None, Decimal("0")}:
+                summary = "Payments and explicit deductions do not explain the processor-reported payout"
+            elif recon.bank_difference not in {None, Decimal("0")}:
+                summary = "Processor-reported payout does not match the independently observed bank deposit"
+            else:
+                summary = "Settlement contains an unresolved deterministic difference"
         elif recon.status == "unknown":
             status, severity, review = UNKNOWN, "S2", True
             summary = "Settlement cannot be verified because required payment or deposit evidence is missing"
         else:
             status, severity, review = UNKNOWN, "S1", True
-            summary = "Settlement is still open because no bank deposit has been linked"
+            summary = "Settlement is open while payment allocations, deductions, or bank evidence are still being assembled"
 
         results.append(VerificationResult(
             verifier_id="V-SETTLEMENT-RECONCILIATION",
@@ -206,9 +211,12 @@ def verify_aggregate_settlements(book, settlement_store) -> list[VerificationRes
                 "fees": _money(recon.fees),
                 "refunds": _money(recon.refunds),
                 "chargebacks": _money(recon.chargebacks),
-                "expected_net": _money(recon.expected_net),
+                "calculated_net": _money(recon.expected_net),
+                "processor_reported_payout": _money(recon.reported_net) if recon.reported_net is not None else "unknown",
+                "components_to_payout_difference": _money(recon.component_difference) if recon.component_difference is not None else "unknown",
                 "deposit_id": recon.deposit_id or "none",
-                "actual_deposit": _money(recon.actual_deposit) if recon.actual_deposit is not None else "unknown",
+                "bank_deposit": _money(recon.actual_deposit) if recon.actual_deposit is not None else "unknown",
+                "payout_to_bank_difference": _money(recon.bank_difference) if recon.bank_difference is not None else "unknown",
                 "difference": _money(recon.difference) if recon.difference is not None else "unknown",
                 "missing_payment_ids": ", ".join(recon.missing_payment_ids) or "none",
             },
