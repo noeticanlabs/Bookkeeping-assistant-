@@ -151,7 +151,7 @@ class PullScheduleStore:
         return self._record(updated)
 
     def mark_failure(self, connector_id: str, capability: str, error: str,
-                     *, now: datetime | None = None, jitter: bool = True) -> PullSchedule:
+                     *, now: datetime | None = None, jitter: bool = True) -> int:
         now = now or _now_dt()
         with self._connect() as conn:
             row = conn.execute(
@@ -173,11 +173,7 @@ class PullScheduleStore:
                 """,
                 (failures, _iso(now), str(error), _iso(next_at), connector_id, capability),
             )
-            updated = conn.execute(
-                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
-                (connector_id, capability),
-            ).fetchone()
-        return self._record(updated)
+        return delay
 
     @staticmethod
     def _record(row: sqlite3.Row) -> PullSchedule:
