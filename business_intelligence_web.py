@@ -9,9 +9,9 @@ from economic_links import RecordLinkStore, all_relationships
 from verifier_registry import default_registry
 
 
-def install_business_intelligence(app, db_path) -> RecordLinkStore:
+def install_business_intelligence(app, db_path, settlement_store=None) -> RecordLinkStore:
     links = RecordLinkStore(db_path)
-    verifiers = default_registry()
+    verifiers = default_registry(settlement_store=settlement_store)
     app.config["RECORD_LINKS"] = links
     app.config["VERIFIER_REGISTRY"] = verifiers
 
