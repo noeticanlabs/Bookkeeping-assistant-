@@ -163,6 +163,9 @@ class SettlementStore:
         deposit_id = deposit_id.strip()
         if deposit_id not in book.deposits:
             raise ValueError("Unknown bank deposit")
+        deposit = book.deposits[deposit_id]
+        if deposit.payment_id:
+            raise ValueError("Bank deposit is directly matched to a payment; remove that single-payment match before using aggregate settlement reconciliation")
         if settlement.deposit_id and settlement.deposit_id != deposit_id:
             raise ValueError("Settlement is already linked to a bank deposit")
         try:
@@ -214,6 +217,8 @@ class SettlementStore:
             difference = actual - expected_net
 
         if missing or (settlement.deposit_id and settlement.deposit_id not in book.deposits):
+            status = "unknown"
+        elif settlement.deposit_id is not None and not payment_ids:
             status = "unknown"
         elif settlement.deposit_id is None:
             status = "open"
