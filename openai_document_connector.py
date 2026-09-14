@@ -11,6 +11,14 @@ from typing import Any
 from connectors import DOCUMENTS_EXTRACT
 
 
+EXTRACTION_SCHEMA_VERSION = "bookkeeping_document_v1"
+EXTRACTION_PROMPT_VERSION = "bookkeeping_document_prompt_v1"
+EXTRACTION_PROMPT = (
+    "Read this bookkeeping source document. Extract only the fields in the schema. "
+    "Do not infer a work order unless an identifier is actually present. "
+    "Use vendor_bill for an invoice/bill requesting payment; use cost for a receipt or already-paid purchase."
+)
+
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -33,6 +41,8 @@ class OpenAIDocumentConnector:
 
     name = "OpenAI Documents"
     capabilities = frozenset({DOCUMENTS_EXTRACT})
+    schema_version = EXTRACTION_SCHEMA_VERSION
+    prompt_version = EXTRACTION_PROMPT_VERSION
 
     def __init__(
         self,
@@ -80,14 +90,7 @@ class OpenAIDocumentConnector:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "Read this bookkeeping source document. Extract only the fields in the schema. "
-                                    "Do not infer a work order unless an identifier is actually present. "
-                                    "Use vendor_bill for an invoice/bill requesting payment; use cost for a receipt or already-paid purchase."
-                                ),
-                            },
+                            {"type": "input_text", "text": EXTRACTION_PROMPT},
                             {"type": "input_file", "file_id": uploaded.id},
                         ],
                     }
