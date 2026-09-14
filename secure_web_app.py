@@ -3,6 +3,7 @@
 import os
 import secrets
 
+from audit_integrity import AuditIntegrityStore
 from auth_web import install_auth
 from business_intelligence_web import install_business_intelligence
 from connection_health import install_connection_health
@@ -42,6 +43,14 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app = create_app(data_path, connectors=connectors)
     _configure_session_secret(app)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
+
+    # Establish and verify the append-only audit chain before any transactional
+    # UOW begins. The existing SQLiteAuditLog object remains the read facade used
+    # by dashboard closures, but every append delegates to the integrity writer.
+    audit_integrity = AuditIntegrityStore(db_path)
+    app.config["AUDIT_INTEGRITY"] = audit_integrity
+    app.config["AUDIT_LOG"].append = audit_integrity.append
+
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
     app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(
         db_path, app.config["BOOKKEEPER"]
