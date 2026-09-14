@@ -9,6 +9,8 @@ from connection_health import install_connection_health
 from connection_manager import ConnectionStore, CredentialCipher
 from connection_manager_web import install_connection_manager
 from csrf import install_csrf
+from document_provenance_web import install_document_provenance_routes
+from extraction_history import ExtractionHistoryStore
 from financial_mutations_web import install_financial_mutation_routes
 from financial_uow import FinancialMutationUnitOfWork
 from managed_connectors import load_managed_connectors
@@ -44,6 +46,8 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(
         db_path, app.config["BOOKKEEPER"]
     )
+    extraction_history = ExtractionHistoryStore(db_path)
+    app.config["EXTRACTION_HISTORY"] = extraction_history
     app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
     app.config["PULL_SCHEDULES"] = PullScheduleStore(db_path)
     settlement_store = SettlementStore(db_path)
@@ -67,6 +71,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_separation_of_duties(app, db_path)
     install_financial_mutation_routes(app)
     install_multi_connector_routes(app)
+    install_document_provenance_routes(app, extraction_history)
     install_settlements(app, settlement_store)
     install_connection_manager(app, connection_store)
     install_connection_health(app, connection_store)
