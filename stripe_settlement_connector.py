@@ -15,7 +15,14 @@ from settlements import SettlementEvidence
 
 
 class StripeSettlementConnector(StripeConnector):
-    capabilities = frozenset({PAYMENTS_READ, SETTLEMENTS_READ})
+    def __init__(self, secret_key: str, name: str = "Stripe",
+                 base_url: str = "https://api.stripe.com/v1"):
+        super().__init__(
+            secret_key=secret_key,
+            name=name,
+            capabilities=frozenset({PAYMENTS_READ, SETTLEMENTS_READ}),
+            base_url=base_url,
+        )
 
     def pull_settlements(self) -> list[SettlementEvidence]:
         result: list[SettlementEvidence] = []
