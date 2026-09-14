@@ -171,11 +171,13 @@ def install_auth(app, db_path) -> UserStore:
 
     app.view_functions["update_company_settings"] = secured_company_settings
 
-    # Generic bookkeeping writes all require bookkeeping.write.
+    # Generic bookkeeping writes still use the legacy broad permission. Sync and
+    # invoice issuance are intentionally excluded: their final route implementations
+    # carry action-specific authority checks in multi_connector_web.py.
     write_endpoints = {
-        "add_work_order", "import_work_order_csv", "sync_field_service",
-        "import_payment_csv", "import_deposit_csv", "sync_accounting",
-        "prepare_invoice", "issue_invoice", "add_payment", "accept_payment_suggestion",
+        "add_work_order", "import_work_order_csv",
+        "import_payment_csv", "import_deposit_csv",
+        "prepare_invoice", "add_payment", "accept_payment_suggestion",
         "add_deposit", "accept_deposit_suggestion", "seed_demo", "extract_document",
     }
     for endpoint in write_endpoints:
