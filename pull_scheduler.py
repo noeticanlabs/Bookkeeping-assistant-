@@ -100,6 +100,16 @@ class PullScheduleStore:
             ).fetchone()
         return self._record(row)
 
+    def get(self, connector_id: str, capability: str) -> PullSchedule:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
+                (connector_id, capability),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Unknown pull schedule")
+        return self._record(row)
+
     def due(self, now: datetime | None = None) -> list[PullSchedule]:
         now_text = _iso(now or _now_dt())
         with self._connect() as conn:
