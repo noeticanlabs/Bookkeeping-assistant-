@@ -4,10 +4,12 @@
   <meta charset="utf-8">
   <title>Settlement Reconciliation</title>
   <style>
-    body { font-family: sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: sans-serif; max-width: 1280px; margin: 2rem auto; padding: 0 1rem; }
     nav a { margin-right: 1rem; }
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
     .card { border:1px solid #ddd; border-radius:8px; padding:1rem; margin:1rem 0; }
+    .notice { border-left:4px solid #777; padding:.65rem .8rem; background:#f7f7f7; }
+    .warn { border-left:4px solid #999; padding:.65rem .8rem; background:#fafafa; font-weight:600; }
     form { display:flex; flex-wrap:wrap; gap:.5rem; align-items:end; margin:.5rem 0; }
     input, select, button { padding:.5rem; }
     table { width:100%; border-collapse:collapse; margin:.75rem 0; }
@@ -16,6 +18,7 @@
     .difference { font-weight:700; }
     .unknown { font-weight:700; }
     code { overflow-wrap:anywhere; }
+    small { color:#555; }
   </style>
 </head>
 <body>
@@ -27,7 +30,7 @@
   </nav>
 
   <h1>Settlement Reconciliation</h1>
-  <p>Prove the chain from customer payments to processor payout to the independently observed bank deposit. Unknown differences stay visible; there is no generic balancing adjustment.</p>
+  <p>Prove the chain from customer transaction evidence to processor payout to the independently observed bank deposit. Imported processor composition is immutable; unknown differences stay visible.</p>
 
   <div class="card">
     <h2>New manual settlement</h2>
@@ -37,7 +40,7 @@
       <label>Reference<br><input name="reference" placeholder="payout / batch reference"></label>
       <button>Create</button>
     </form>
-    <small>Connected processors such as Stripe can create settlement evidence automatically. Manual creation does not invent a reported payout amount.</small>
+    <small>Connected processors can create settlement evidence automatically. Manual creation does not invent a processor-reported payout.</small>
   </div>
 
   {% for row in rows %}
@@ -47,68 +50,117 @@
       <h2>{{ s.settlement_id }} — {{ s.provider }}</h2>
       <p>Status: <strong class="{{ r.status }}">{{ r.status|upper }}</strong>{% if s.reference %} · {{ s.reference }}{% endif %}</p>
 
+      {% if r.composition_note %}
+        <div class="notice">
+          <strong>Processor composition:</strong> {{ r.composition_note }}
+          {% if r.composition_complete %} · source batch marked complete{% else %} · deterministic composition unavailable{% endif %}
+        </div>
+      {% endif %}
+
       <table>
         <tr><th>Gross customer payments</th><td>{{ r.gross_payments }}</td></tr>
-        <tr><th>Processor fees</th><td>-{{ r.fees }}</td></tr>
-        <tr><th>Refunds</th><td>-{{ r.refunds }}</td></tr>
-        <tr><th>Chargebacks</th><td>-{{ r.chargebacks }}</td></tr>
-        <tr><th>Calculated net settlement</th><td><strong>{{ r.expected_net }}</strong></td></tr>
+        <tr><th>Processor fees</th><td>{{ r.fees }}</td></tr>
+        <tr><th>Refunds</th><td>{{ r.refunds }}</td></tr>
+        <tr><th>Chargebacks / disputes</th><td>{{ r.chargebacks }}</td></tr>
+        <tr><th>{% if row.components %}Σ processor component net{% else %}Calculated net settlement{% endif %}</th><td><strong>{{ r.expected_net }}</strong></td></tr>
         <tr><th>Processor-reported payout</th><td>{{ r.reported_net if r.reported_net is not none else '—' }}</td></tr>
         <tr><th>Components → payout difference</th><td>{{ r.component_difference if r.component_difference is not none else '—' }}</td></tr>
         <tr><th>Independent bank deposit</th><td>{{ r.actual_deposit if r.actual_deposit is not none else '—' }}</td></tr>
         <tr><th>Payout → bank difference</th><td>{{ r.bank_difference if r.bank_difference is not none else '—' }}</td></tr>
       </table>
 
-      <p><strong>Payments:</strong> {{ r.payment_ids|join(', ') if r.payment_ids else 'none' }}</p>
-      {% if row.adjustments %}
-        <p><strong>Explicit deductions:</strong>
-        {% for a in row.adjustments %}
-          {{ a.adjustment_id }} ({{ a.kind }} {{ a.amount }}){% if not loop.last %}, {% endif %}
-        {% endfor %}
-        </p>
+      <p><strong>Mapped payments:</strong> {{ r.payment_ids|join(', ') if r.payment_ids else 'none' }}</p>
+
+      {% if r.unmapped_payment_component_ids %}
+        <div class="warn">Processor payment component(s) not yet mapped to internal payment evidence: {{ r.unmapped_payment_component_ids|join(', ') }}</div>
+      {% endif %}
+      {% if r.unclassified_component_ids %}
+        <div class="warn">Processor movement(s) retained exactly but not yet assigned a supported bookkeeping class: {{ r.unclassified_component_ids|join(', ') }}</div>
       {% endif %}
 
-      <div class="grid">
-        <div>
-          <strong>Add customer payment</strong>
-          <form method="post" action="{{ url_for('add_settlement_payment', settlement_id=s.settlement_id) }}">
-            <select name="payment_id" required>
-              <option value="">Choose payment</option>
-              {% for payment in payments %}
-                <option value="{{ payment.id }}">{{ payment.id }} — {{ payment.amount }}</option>
-              {% endfor %}
-            </select>
-            <button>Add</button>
-          </form>
-        </div>
+      {% if row.components %}
+        <h3>Immutable processor payout composition</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Balance transaction</th><th>Class</th><th>Reporting category</th><th>Amount</th><th>Fee</th><th>Net</th><th>Source</th><th>Mapped payment</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for c in row.components %}
+            <tr>
+              <td><code>{{ c.component_id }}</code></td>
+              <td>{{ c.kind }}</td>
+              <td>{{ c.reporting_category or c.transaction_type }}</td>
+              <td>{{ c.amount }} {{ c.currency|upper }}</td>
+              <td>{{ c.fee }} {{ c.currency|upper }}</td>
+              <td><strong>{{ c.net }} {{ c.currency|upper }}</strong></td>
+              <td><code>{{ c.source_id or '—' }}</code></td>
+              <td><code>{{ c.payment_id or '—' }}</code></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
 
-        <div>
-          <strong>Add explicit deduction</strong>
-          <form method="post" action="{{ url_for('add_settlement_adjustment', settlement_id=s.settlement_id) }}">
-            <input name="adjustment_id" placeholder="fee/refund ID" required>
-            <select name="kind" required>
-              <option value="fee">Fee</option>
-              <option value="refund">Refund</option>
-              <option value="chargeback">Chargeback</option>
-            </select>
-            <input name="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required>
-            <input name="reference" placeholder="Reference">
-            <button>Add</button>
-          </form>
-        </div>
+        {% if r.category_totals %}
+          <p><strong>Net by Stripe reporting category:</strong>
+          {% for category, total in r.category_totals %}
+            {{ category }}={{ total }}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+          </p>
+        {% endif %}
+        <small>This composition is source-derived and read-only. Manual payment/deduction edits are disabled so imported evidence cannot be altered to force a reconciliation.</small>
+      {% else %}
+        {% if row.adjustments %}
+          <p><strong>Explicit manual deductions:</strong>
+          {% for a in row.adjustments %}
+            {{ a.adjustment_id }} ({{ a.kind }} {{ a.amount }}){% if not loop.last %}, {% endif %}
+          {% endfor %}
+          </p>
+        {% endif %}
 
-        <div>
-          <strong>Link independent bank deposit</strong>
-          <form method="post" action="{{ url_for('link_settlement_deposit', settlement_id=s.settlement_id) }}">
-            <select name="deposit_id" required>
-              <option value="">Choose deposit</option>
-              {% for deposit in deposits %}
-                <option value="{{ deposit.id }}">{{ deposit.id }} — {{ deposit.amount }}</option>
-              {% endfor %}
-            </select>
-            <button>Link & reconcile</button>
-          </form>
+        <div class="grid">
+          <div>
+            <strong>Add customer payment</strong>
+            <form method="post" action="{{ url_for('add_settlement_payment', settlement_id=s.settlement_id) }}">
+              <select name="payment_id" required>
+                <option value="">Choose payment</option>
+                {% for payment in payments %}
+                  <option value="{{ payment.id }}">{{ payment.id }} — {{ payment.amount }}</option>
+                {% endfor %}
+              </select>
+              <button>Add</button>
+            </form>
+          </div>
+
+          <div>
+            <strong>Add explicit deduction</strong>
+            <form method="post" action="{{ url_for('add_settlement_adjustment', settlement_id=s.settlement_id) }}">
+              <input name="adjustment_id" placeholder="fee/refund ID" required>
+              <select name="kind" required>
+                <option value="fee">Fee</option>
+                <option value="refund">Refund</option>
+                <option value="chargeback">Chargeback</option>
+              </select>
+              <input name="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required>
+              <input name="reference" placeholder="Reference">
+              <button>Add</button>
+            </form>
+          </div>
         </div>
+      {% endif %}
+
+      <div>
+        <strong>Link independent bank deposit</strong>
+        <form method="post" action="{{ url_for('link_settlement_deposit', settlement_id=s.settlement_id) }}">
+          <select name="deposit_id" required>
+            <option value="">Choose deposit</option>
+            {% for deposit in deposits %}
+              <option value="{{ deposit.id }}">{{ deposit.id }} — {{ deposit.amount }}</option>
+            {% endfor %}
+          </select>
+          <button>Link & reconcile</button>
+        </form>
       </div>
     </div>
   {% else %}
