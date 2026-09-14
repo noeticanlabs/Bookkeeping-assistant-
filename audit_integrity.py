@@ -124,10 +124,28 @@ def _install_append_only_triggers(conn: sqlite3.Connection) -> None:
     )
 
 
+def _integrity_ready(conn: sqlite3.Connection) -> bool:
+    columns = _columns(conn)
+    if not {"prev_hash", "event_hash"}.issubset(columns):
+        return False
+    trigger = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+    ).fetchone()
+    return trigger is not None
+
+
 def ensure_audit_integrity(conn: sqlite3.Connection) -> None:
-    """Migrate legacy audit rows once and enforce append-only writes afterward."""
+    """Migrate legacy audit rows once and enforce append-only writes afterward.
+
+    This function performs schema/trigger setup and therefore must not be invoked
+    from inside a caller-owned financial transaction. SQLite executescript may
+    commit a transaction, which would violate atomic rollback guarantees.
+    """
+    if conn.in_transaction:
+        if not _integrity_ready(conn):
+            raise RuntimeError("Audit integrity must be initialized before starting a transaction")
+        return
     _ensure_columns(conn)
-    # Legacy rows must be backfilled before UPDATE becomes forbidden.
     trigger_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
     ).fetchone()
@@ -147,8 +165,11 @@ def append_audit_row(
     created_at: str | None = None,
 ) -> str:
     """Append one event to the chain using the caller's transaction when present."""
-    ensure_audit_integrity(conn)
-    if not conn.in_transaction:
+    if conn.in_transaction:
+        if not _integrity_ready(conn):
+            raise RuntimeError("Audit integrity must be initialized before starting a transaction")
+    else:
+        ensure_audit_integrity(conn)
         conn.execute("BEGIN IMMEDIATE")
 
     prior = conn.execute(
@@ -212,6 +233,7 @@ class AuditIntegrityStore:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys=ON")
+            ensure_audit_integrity(conn)
             conn.execute("BEGIN IMMEDIATE")
             created_at = datetime.now(timezone.utc).isoformat()
             event_id = f"AUD-{uuid.uuid4().hex[:16]}"
