@@ -50,23 +50,26 @@ class StripeSettlementConnector(StripeConnector):
     def _component_kind(reporting_category: str, transaction_type: str, source) -> str:
         """Map only accounting classes we explicitly understand.
 
-        Stripe's reporting_category is preferred because Stripe documents it as
-        the finance/reporting-oriented grouping. Raw type/source information is
-        retained and used only as a conservative fallback.
+        Stripe documents reporting_category as the finance/reporting-oriented
+        grouping. When Stripe supplies it, an unrecognized category remains
+        ``other`` rather than being reinterpreted through the older type field.
+        This prevents cases such as partial_capture_reversal(type=refund) from
+        being silently mislabeled as a customer refund.
         """
         category = reporting_category.lower()
+        if category:
+            if category == "refund":
+                return "refund"
+            if category == "dispute":
+                return "chargeback"
+            if category == "charge":
+                return "payment"
+            if category == "fee":
+                return "fee"
+            return "other"
+
         tx_type = transaction_type.lower()
         source_type = str(source.get("object") or "").lower() if isinstance(source, dict) else ""
-
-        if category == "refund":
-            return "refund"
-        if "dispute" in category or "chargeback" in category:
-            return "chargeback"
-        if category == "charge":
-            return "payment"
-        if category == "fee":
-            return "fee"
-
         text = " ".join((tx_type, source_type))
         if "refund" in text:
             return "refund"
