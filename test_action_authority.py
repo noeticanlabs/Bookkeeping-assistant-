@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app import Payment, WorkOrder
+from app import WorkOrder
 from connectors import ConnectorHub, INVOICES_WRITE, PAYMENTS_READ, WORK_ORDERS_READ
 from permissions import PermissionStore
 from secure_web_app import create_secure_app
@@ -142,6 +142,10 @@ def test_invoice_issue_permission_is_independent_from_legacy_bookkeeping_write(t
     assert invoice.status == "draft"
     assert b"invoice.issue permission required" in response.data
 
+    restarted = PermissionStore(app.config["BOOKKEEPER_DATA_PATH"])
+    assert "invoice.issue" not in restarted.permissions_for_role("Bookkeeper")
+    assert "bookkeeping.write" in restarted.permissions_for_role("Bookkeeper")
+
 
 def test_sync_run_permission_is_independent_from_legacy_bookkeeping_write(tmp_path):
     app, client, connector = build_app(tmp_path)
@@ -162,11 +166,13 @@ def test_sync_run_permission_is_independent_from_legacy_bookkeeping_write(tmp_pa
 
 def test_existing_legacy_bookkeeping_write_roles_migrate_to_new_action_permissions(tmp_path):
     path = tmp_path / "legacy-auth.db"
-    store = PermissionStore(path)
     with sqlite3.connect(path) as conn:
         conn.execute(
-            "UPDATE role_permissions SET permissions=? WHERE role='Bookkeeper'",
-            ('["records.read", "bookkeeping.write"]',),
+            "CREATE TABLE role_permissions(role TEXT PRIMARY KEY, permissions TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO role_permissions(role,permissions) VALUES(?,?)",
+            ("Bookkeeper", '["records.read", "bookkeeping.write"]'),
         )
 
     migrated = PermissionStore(path).permissions_for_role("Bookkeeper")
