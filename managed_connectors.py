@@ -16,10 +16,10 @@ from live_connectors import (
     JobberConnector,
     QuickBooksOnlineConnector,
     ServiceTitanConnector,
-    StripeConnector,
     XeroConnector,
     YardiMaintenanceConnector,
 )
+from stripe_settlement_connector import StripeSettlementConnector
 
 
 XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
@@ -194,7 +194,7 @@ def build_connector(store: ConnectionStore, connection_id: str):
             return None
         connector = ManagedXeroConnector(store, connection_id)
     elif provider == "stripe":
-        connector = StripeConnector(secret_key=str(data["secret_key"]))
+        connector = StripeSettlementConnector(secret_key=str(data["secret_key"]))
     elif provider == "jobber":
         if record.status == "connected" and data.get("access_token") and data.get("refresh_token"):
             connector = ManagedJobberConnector(store, connection_id)
