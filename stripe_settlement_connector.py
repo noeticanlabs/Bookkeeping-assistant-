@@ -1,9 +1,10 @@
 """Stripe adapter with processor-settlement semantics.
 
 Successful PaymentIntents are customer-payment evidence. Stripe payouts are
-processor settlement evidence, not bank deposits. For automatic standard payouts,
-composition is reconstructed from Stripe Balance Transactions filtered by payout.
-The actual bank deposit must still come from an independent bank/accounting source.
+processor settlement evidence, not bank deposits. For reconciled automatic
+standard payouts, composition is reconstructed from Stripe Balance Transactions
+filtered by payout. The actual bank deposit must still come from an independent
+bank/accounting source.
 """
 
 from __future__ import annotations
@@ -47,17 +48,33 @@ class StripeSettlementConnector(StripeConnector):
 
     @staticmethod
     def _component_kind(reporting_category: str, transaction_type: str, source) -> str:
+        """Map only accounting classes we explicitly understand.
+
+        Stripe's reporting_category is preferred because Stripe documents it as
+        the finance/reporting-oriented grouping. Raw type/source information is
+        retained and used only as a conservative fallback.
+        """
         category = reporting_category.lower()
         tx_type = transaction_type.lower()
         source_type = str(source.get("object") or "").lower() if isinstance(source, dict) else ""
-        text = " ".join((category, tx_type, source_type))
+
+        if category == "refund":
+            return "refund"
+        if "dispute" in category or "chargeback" in category:
+            return "chargeback"
+        if category == "charge":
+            return "payment"
+        if category == "fee":
+            return "fee"
+
+        text = " ".join((tx_type, source_type))
         if "refund" in text:
             return "refund"
         if "dispute" in text or "chargeback" in text:
             return "chargeback"
-        if category in {"charge", "payment"} or tx_type in {"charge", "payment"} or source_type == "charge":
+        if tx_type in {"charge", "payment"} or source_type == "charge":
             return "payment"
-        if "fee" in category or tx_type in {"stripe_fee", "stripe_fx_fee", "tax_fee"}:
+        if tx_type in {"stripe_fee", "stripe_fx_fee", "tax_fee"}:
             return "fee"
         return "other"
 
@@ -123,7 +140,16 @@ class StripeSettlementConnector(StripeConnector):
                 reference = str(row.get("description") or payout_id)
                 automatic = row.get("automatic") is True
                 method = str(row.get("method") or "standard").lower()
-                if automatic and method != "instant":
+                reconciliation_status = str(row.get("reconciliation_status") or "").lower()
+
+                # Stripe explicitly declares when payout composition is queryable.
+                # The fallback preserves compatibility with older/mock responses
+                # that predate reconciliation_status in this adapter.
+                composition_ready = reconciliation_status == "completed" or (
+                    not reconciliation_status and automatic and method != "instant"
+                )
+
+                if composition_ready:
                     components = self._pull_payout_components(payout_id)
                     result.append(SettlementEvidence(
                         settlement_id=f"STRIPE-SET:{payout_id}",
@@ -136,6 +162,17 @@ class StripeSettlementConnector(StripeConnector):
                             f"Automatic Stripe payout reconstructed from {len(components)} balance transaction(s)"
                         ),
                     ))
+                elif reconciliation_status == "in_progress":
+                    result.append(SettlementEvidence(
+                        settlement_id=f"STRIPE-SET:{payout_id}",
+                        provider="Stripe",
+                        reported_net=amount,
+                        reference=reference,
+                        composition_complete=False,
+                        composition_note=(
+                            "Stripe payout reconciliation is still in progress; component reconstruction will retry on a later sync"
+                        ),
+                    ))
                 else:
                     result.append(SettlementEvidence(
                         settlement_id=f"STRIPE-SET:{payout_id}",
@@ -144,7 +181,7 @@ class StripeSettlementConnector(StripeConnector):
                         reference=reference,
                         composition_complete=False,
                         composition_note=(
-                            "Stripe does not expose deterministic transaction composition for this non-automatic or instant payout"
+                            "Stripe does not expose deterministic transaction composition for this payout"
                         ),
                     ))
             if not payload.get("has_more") or not rows:
