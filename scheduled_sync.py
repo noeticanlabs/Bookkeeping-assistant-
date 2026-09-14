@@ -92,7 +92,7 @@ def execute_due_pulls(app) -> dict[str, int]:
                 settlement_store = app.config.get("SETTLEMENT_STORE")
                 if settlement_store is None:
                     raise RuntimeError("Settlement store is not configured")
-                result = settlement_store.import_evidence(rows)
+                result = settlement_store.import_evidence(rows, book=book)
             else:
                 result = importer(book, rows)
                 save()
