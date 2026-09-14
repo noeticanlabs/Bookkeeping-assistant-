@@ -16,6 +16,8 @@ from pull_scheduler import PullScheduleStore
 from readiness import install_readiness
 from redirect_safety import install_redirect_safety
 from scheduled_sync import discover_safe_pull_schedules, start_scheduler_thread
+from settlements import SettlementStore
+from settlements_web import install_settlements
 from sod_web import install_separation_of_duties
 from sqlite_store import save_bookkeeper
 from sync_reliability import SyncReliabilityStore
@@ -39,6 +41,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
     app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
     app.config["PULL_SCHEDULES"] = PullScheduleStore(db_path)
+    settlement_store = SettlementStore(db_path)
     app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(
         60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900"))
     )
@@ -58,11 +61,12 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_auth(app, db_path)
     install_separation_of_duties(app, db_path)
     install_multi_connector_routes(app)
+    install_settlements(app, settlement_store)
     install_connection_manager(app, connection_store)
     install_connection_health(app, connection_store)
     install_onboarding(app, db_path)
     install_readiness(app)
-    install_business_intelligence(app, db_path)
+    install_business_intelligence(app, db_path, settlement_store=settlement_store)
     app.config["AUTO_SYNC_THREAD"] = start_scheduler_thread(app)
     app.config["AUTO_SYNC_ENABLED"] = app.config["AUTO_SYNC_THREAD"] is not None
     return app
