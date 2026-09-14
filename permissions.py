@@ -12,6 +12,7 @@ PERMISSIONS = (
     "bookkeeping.write",
     "sync.run",
     "invoice.issue",
+    "documents.submit",
     "documents.approve",
     "corrections.propose",
     "corrections.approve",
@@ -23,20 +24,22 @@ DEFAULT_ROLE_PERMISSIONS = {
     "Administrator": set(PERMISSIONS),
     "Owner": {
         "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
-        "documents.approve", "corrections.propose", "corrections.approve",
+        "documents.submit", "documents.approve", "corrections.propose", "corrections.approve",
     },
     "Bookkeeper": {
         "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
-        "documents.approve", "corrections.propose",
+        "documents.submit", "documents.approve", "corrections.propose",
     },
     "Viewer": {"records.read"},
 }
 
-# Existing installations predate action-specific sync/invoice permissions. Preserve
-# their historical bookkeeping.write capability once, then let later administrator
-# changes remain authoritative across restarts.
-LEGACY_BOOKKEEPING_WRITE_IMPLIED = {"sync.run", "invoice.issue"}
-ACTION_PERMISSION_MIGRATION = "action_permissions_v1"
+# Each permission expansion is migrated once. This preserves historical access
+# for roles that previously relied on bookkeeping.write without re-granting a
+# permission an administrator later removes deliberately.
+PERMISSION_MIGRATIONS = (
+    ("action_permissions_v1", {"sync.run", "invoice.issue"}),
+    ("action_permissions_v2", {"documents.submit"}),
+)
 
 
 class PermissionStore:
@@ -69,11 +72,13 @@ class PermissionStore:
                     (role, json.dumps(sorted(permissions))),
                 )
 
-            migrated = conn.execute(
-                "SELECT value FROM permission_meta WHERE key=?",
-                (ACTION_PERMISSION_MIGRATION,),
-            ).fetchone()
-            if migrated is None:
+            for migration_key, implied_permissions in PERMISSION_MIGRATIONS:
+                migrated = conn.execute(
+                    "SELECT value FROM permission_meta WHERE key=?",
+                    (migration_key,),
+                ).fetchone()
+                if migrated is not None:
+                    continue
                 rows = conn.execute("SELECT role,permissions FROM role_permissions").fetchall()
                 for row in rows:
                     current = set(json.loads(row["permissions"]))
@@ -81,7 +86,7 @@ class PermissionStore:
                     if row["role"] == "Administrator":
                         upgraded = set(PERMISSIONS)
                     elif "bookkeeping.write" in current:
-                        upgraded.update(LEGACY_BOOKKEEPING_WRITE_IMPLIED)
+                        upgraded.update(implied_permissions)
                     if upgraded != current:
                         conn.execute(
                             "UPDATE role_permissions SET permissions=? WHERE role=?",
@@ -89,7 +94,7 @@ class PermissionStore:
                         )
                 conn.execute(
                     "INSERT INTO permission_meta(key,value) VALUES(?,?)",
-                    (ACTION_PERMISSION_MIGRATION, "complete"),
+                    (migration_key, "complete"),
                 )
 
     def roles(self) -> dict[str, set[str]]:
