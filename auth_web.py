@@ -8,6 +8,7 @@ from functools import wraps
 from flask import flash, g, redirect, render_template, request, session, url_for
 
 from auth import UserStore
+from authority import requires_action
 from document_intake import record_approved_document
 from permissions import PERMISSIONS, PermissionStore
 
@@ -171,14 +172,14 @@ def install_auth(app, db_path) -> UserStore:
 
     app.view_functions["update_company_settings"] = secured_company_settings
 
-    # Generic bookkeeping writes still use the legacy broad permission. Sync and
-    # invoice issuance are intentionally excluded: their final route implementations
-    # carry action-specific authority checks in multi_connector_web.py.
+    # Generic bookkeeping writes still use the legacy broad permission. Sync,
+    # invoice issuance, and document submission are excluded because they carry
+    # action-specific authority checks.
     write_endpoints = {
         "add_work_order", "import_work_order_csv",
         "import_payment_csv", "import_deposit_csv",
         "prepare_invoice", "add_payment", "accept_payment_suggestion",
-        "add_deposit", "accept_deposit_suggestion", "seed_demo", "extract_document",
+        "add_deposit", "accept_deposit_suggestion", "seed_demo",
     }
     for endpoint in write_endpoints:
         if endpoint not in app.view_functions:
@@ -194,6 +195,10 @@ def install_auth(app, db_path) -> UserStore:
             return guarded
 
         app.view_functions[endpoint] = make_guard(original)
+
+    app.view_functions["extract_document"] = requires_action(app, "document.submit")(
+        app.view_functions["extract_document"]
+    )
 
     def secured_approve_document():
         user = current_user()
