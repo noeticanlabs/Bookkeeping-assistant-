@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from atomic_uow import _audit_row, _persist_book, _restore_book
+from audit_integrity import ensure_audit_integrity
 from sqlite_store import _connect, initialize
 
 T = TypeVar("T")
@@ -29,6 +30,11 @@ class FinancialMutationUnitOfWork:
         self.book = book
         self._lock = threading.RLock()
         initialize(self.db_path)
+        # Schema/trigger setup must happen before BEGIN IMMEDIATE. Doing this
+        # inside commit() could allow SQLite DDL/executescript to break the
+        # financial + audit rollback boundary.
+        with _connect(self.db_path) as conn:
+            ensure_audit_integrity(conn)
 
     def commit(
         self,
