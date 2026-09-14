@@ -74,6 +74,7 @@ def test_final_replacement_routes_carry_governed_action_metadata(tmp_path):
     assert app.view_functions["sync_field_service"]._governed_action == "sync.run"
     assert app.view_functions["sync_accounting"]._governed_action == "sync.run"
     assert app.view_functions["issue_invoice"]._governed_action == "invoice.issue"
+    assert app.view_functions["extract_document"]._governed_action == "document.submit"
 
 
 def test_viewer_cannot_reach_replaced_sync_or_invoice_handlers(tmp_path):
@@ -164,6 +165,27 @@ def test_sync_run_permission_is_independent_from_legacy_bookkeeping_write(tmp_pa
     assert b"sync.run permission required" in response.data
 
 
+def test_document_submit_and_approval_permissions_are_independent(tmp_path):
+    app, client, _ = build_app(tmp_path)
+    permissions = app.config["PERMISSION_STORE"]
+    current = permissions.permissions_for_role("Bookkeeper")
+    assert {"bookkeeping.write", "documents.submit", "documents.approve"} <= current
+
+    # A user may submit evidence without holding authority to approve it.
+    permissions.set_role_permissions("Bookkeeper", current - {"documents.approve"})
+    logout(client)
+    login(client, "books", "bookkeeper-password")
+    submit_response = client.post("/documents/extract", follow_redirects=True)
+    approve_response = client.post("/documents/approve", data={"amount": "10"}, follow_redirects=True)
+    assert b"No document extraction connector is configured" in submit_response.data
+    assert b"Document-approval permission required" in approve_response.data
+
+    # Approval authority does not imply permission to submit documents for AI extraction.
+    permissions.set_role_permissions("Bookkeeper", (current - {"documents.submit"}) | {"documents.approve"})
+    blocked_submit = client.post("/documents/extract", follow_redirects=True)
+    assert b"documents.submit permission required" in blocked_submit.data
+
+
 def test_existing_legacy_bookkeeping_write_roles_migrate_to_new_action_permissions(tmp_path):
     path = tmp_path / "legacy-auth.db"
     with sqlite3.connect(path) as conn:
@@ -179,3 +201,4 @@ def test_existing_legacy_bookkeeping_write_roles_migrate_to_new_action_permissio
     assert "bookkeeping.write" in migrated
     assert "sync.run" in migrated
     assert "invoice.issue" in migrated
+    assert "documents.submit" in migrated
