@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from flask import flash, g, redirect, render_template, url_for
 
+from authority import requires_action
 from imports import import_deposits, import_payments, import_work_orders
 from verifier_registry import blocking_invoice_failures
 
@@ -138,6 +139,7 @@ def install_multi_connector_routes(app) -> None:
                 pass
             flash(f"{sname} settlement sync failed: {exc}", "error")
 
+    @requires_action(app, "sync.run")
     def sync_field_service_multi():
         sources = hub.work_order_sources()
         if not sources:
@@ -147,6 +149,7 @@ def install_multi_connector_routes(app) -> None:
             _pull(source, "work_orders.read", source.pull_work_orders, import_work_orders, "work orders")
         return redirect(url_for("dashboard"))
 
+    @requires_action(app, "sync.run")
     def sync_accounting_multi():
         payment_sources = hub.payment_sources()
         deposit_sources = hub.deposit_sources()
@@ -162,6 +165,7 @@ def install_multi_connector_routes(app) -> None:
             _pull(source, "deposits.read", source.pull_deposits, import_deposits, "bank deposits")
         return redirect(url_for("dashboard"))
 
+    @requires_action(app, "invoice.issue")
     def issue_invoice_multi(invoice_id: str):
         sync = app.config["SYNC_RELIABILITY"]
         try:
@@ -244,6 +248,9 @@ def install_multi_connector_routes(app) -> None:
             flash(str(exc), "error")
         return redirect(url_for("dashboard"))
 
+    # Replace the compatibility routes with the final governed implementations.
+    # Their authority checks are attached to these final functions, so later
+    # view-function assignment cannot strip an earlier wrapper.
     app.view_functions["sync_field_service"] = sync_field_service_multi
     app.view_functions["sync_accounting"] = sync_accounting_multi
     app.view_functions["issue_invoice"] = issue_invoice_multi
