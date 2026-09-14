@@ -42,8 +42,8 @@ def test_aggregate_settlement_reconciles_multiple_payments_and_explicit_deductio
 
     verified = _verification(default_registry(store).run(book), "SET-1")
     assert verified.status == PASS
-    assert verified.evidence["expected_net"] == "1305"
-    assert verified.evidence["actual_deposit"] == "1305"
+    assert verified.evidence["calculated_net"] == "1305"
+    assert verified.evidence["bank_deposit"] == "1305"
 
 
 def test_settlement_difference_is_a_deterministic_failure(tmp_path):
@@ -115,6 +115,12 @@ def test_component_difference_is_separate_from_bank_difference(tmp_path):
     assert recon.bank_difference == Decimal("0")
     assert recon.status == "difference"
 
+    verified = _verification(default_registry(store).run(book), "SET-1")
+    assert verified.status == FAIL
+    assert "do not explain" in verified.summary
+    assert verified.evidence["components_to_payout_difference"] == "1"
+    assert verified.evidence["payout_to_bank_difference"] == "0"
+
 
 def test_bank_difference_is_separate_from_processor_component_difference(tmp_path):
     book = Bookkeeper()
@@ -134,6 +140,12 @@ def test_bank_difference_is_separate_from_processor_component_difference(tmp_pat
     assert recon.component_difference == Decimal("0")
     assert recon.bank_difference == Decimal("-1")
     assert recon.status == "difference"
+
+    verified = _verification(default_registry(store).run(book), "SET-1")
+    assert verified.status == FAIL
+    assert "bank deposit" in verified.summary
+    assert verified.evidence["components_to_payout_difference"] == "0"
+    assert verified.evidence["payout_to_bank_difference"] == "-1"
 
 
 def test_payment_cannot_be_counted_in_two_settlements(tmp_path):
