@@ -2,7 +2,8 @@
 
 Connectors advertise capabilities instead of being forced into one vendor role.
 A company may therefore use Yardi only for work orders, QuickBooks only for
-financial evidence, and OpenAI only for document interpretation at the same time.
+financial evidence, Stripe only for payments/settlements, and OpenAI only for
+document interpretation at the same time.
 """
 
 from __future__ import annotations
@@ -11,12 +12,14 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app import BankDeposit, Invoice, Payment, WorkOrder
+from settlements import SettlementEvidence
 
 
 WORK_ORDERS_READ = "work_orders.read"
 INVOICES_WRITE = "invoices.write"
 PAYMENTS_READ = "payments.read"
 DEPOSITS_READ = "deposits.read"
+SETTLEMENTS_READ = "settlements.read"
 DOCUMENTS_EXTRACT = "documents.extract"
 
 _CAPABILITY_METHOD = {
@@ -24,6 +27,7 @@ _CAPABILITY_METHOD = {
     INVOICES_WRITE: "push_invoice",
     PAYMENTS_READ: "pull_payments",
     DEPOSITS_READ: "pull_deposits",
+    SETTLEMENTS_READ: "pull_settlements",
     DOCUMENTS_EXTRACT: "extract",
 }
 
@@ -48,6 +52,13 @@ class AccountingConnector(Protocol):
     def push_invoice(self, invoice: Invoice) -> str: ...
     def pull_payments(self) -> list[Payment]: ...
     def pull_deposits(self) -> list[BankDeposit]: ...
+
+
+class SettlementConnector(Protocol):
+    name: str
+    capabilities: frozenset[str]
+
+    def pull_settlements(self) -> list[SettlementEvidence]: ...
 
 
 class DocumentConnector(Protocol):
@@ -89,7 +100,10 @@ class ConnectorHub:
             self.connectors.append(connector)
         if self.field_service is None and connector_has_capability(connector, WORK_ORDERS_READ):
             self.field_service = connector  # compatibility primary
-        if self.accounting is None and any(connector_has_capability(connector, cap) for cap in (PAYMENTS_READ, DEPOSITS_READ, INVOICES_WRITE)):
+        if self.accounting is None and any(
+            connector_has_capability(connector, cap)
+            for cap in (PAYMENTS_READ, DEPOSITS_READ, SETTLEMENTS_READ, INVOICES_WRITE)
+        ):
             self.accounting = connector  # compatibility primary
         if self.documents is None and connector_has_capability(connector, DOCUMENTS_EXTRACT):
             self.documents = connector
@@ -106,6 +120,9 @@ class ConnectorHub:
 
     def deposit_sources(self) -> list[object]:
         return self.with_capability(DEPOSITS_READ)
+
+    def settlement_sources(self) -> list[object]:
+        return self.with_capability(SETTLEMENTS_READ)
 
     def invoice_sinks(self) -> list[object]:
         return self.with_capability(INVOICES_WRITE)
