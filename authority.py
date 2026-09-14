@@ -16,6 +16,7 @@ from flask import flash, g, redirect, url_for
 ACTION_PERMISSIONS = {
     "sync.run": "sync.run",
     "invoice.issue": "invoice.issue",
+    "document.submit": "documents.submit",
 }
 
 
