@@ -15,10 +15,11 @@ from imports import import_deposits, import_payments, import_work_orders
 from pull_scheduler import PullScheduleStore, SAFE_PULL_CAPABILITIES
 
 
-CAPABILITY_IMPORTERS: dict[str, tuple[str, str, Callable]] = {
+CAPABILITY_IMPORTERS: dict[str, tuple[str, str, Callable | None]] = {
     "work_orders.read": ("pull_work_orders", "work orders", import_work_orders),
     "payments.read": ("pull_payments", "payments", import_payments),
     "deposits.read": ("pull_deposits", "deposits", import_deposits),
+    "settlements.read": ("pull_settlements", "settlements", None),
 }
 
 
@@ -87,8 +88,14 @@ def execute_due_pulls(app) -> dict[str, int]:
         snapshot = deepcopy(book)
         try:
             rows = loader()
-            result = importer(book, rows)
-            save()
+            if schedule.capability == "settlements.read":
+                settlement_store = app.config.get("SETTLEMENT_STORE")
+                if settlement_store is None:
+                    raise RuntimeError("Settlement store is not configured")
+                result = settlement_store.import_evidence(rows)
+            else:
+                result = importer(book, rows)
+                save()
             reliability.finish_run(
                 run_id, added=result.added, skipped=result.skipped,
                 detail={"errors": list(result.errors), "scheduler": True},
@@ -105,7 +112,8 @@ def execute_due_pulls(app) -> dict[str, int]:
             except Exception:
                 pass
         except Exception as exc:
-            _restore_book(book, snapshot)
+            if schedule.capability != "settlements.read":
+                _restore_book(book, snapshot)
             try:
                 reliability.fail_run(run_id, str(exc), detail={"scheduler": True})
             except ValueError:
