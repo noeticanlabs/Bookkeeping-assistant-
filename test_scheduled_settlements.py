@@ -40,4 +40,4 @@ def test_due_scheduled_settlement_pull_persists_processor_evidence(tmp_path):
     assert schedule.last_success_at is not None
 
     runs = app.config["SYNC_RELIABILITY"].list_runs()
-    assert any(run.capability == SETTLEMENTS_READ and run.status == "succeeded" for run in runs)
+    assert any(run.capability == SETTLEMENTS_READ and run.status == "success" for run in runs)
