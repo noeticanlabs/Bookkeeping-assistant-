@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-SAFE_PULL_CAPABILITIES = frozenset({"work_orders.read", "payments.read", "deposits.read"})
+SAFE_PULL_CAPABILITIES = frozenset({"work_orders.read", "payments.read", "deposits.read", "settlements.read"})
 
 
 def _now_dt() -> datetime:
@@ -78,33 +78,36 @@ class PullScheduleStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO pull_schedules(connector_id,connector_name,capability,enabled,interval_seconds,next_attempt_at)
-                VALUES(?,?,?,1,?,?)
+                INSERT INTO pull_schedules(
+                    connector_id,connector_name,capability,enabled,interval_seconds,
+                    consecutive_failures,next_attempt_at,last_attempt_at,last_success_at,last_error
+                ) VALUES(?,?,?,?,?,0,?,NULL,NULL,NULL)
                 ON CONFLICT(connector_id,capability) DO UPDATE SET
                     connector_name=excluded.connector_name,
-                    interval_seconds=excluded.interval_seconds
+                    interval_seconds=excluded.interval_seconds,
+                    enabled=1,
+                    next_attempt_at=CASE
+                        WHEN ?=1 AND pull_schedules.next_attempt_at > excluded.next_attempt_at
+                        THEN excluded.next_attempt_at
+                        ELSE pull_schedules.next_attempt_at
+                    END
                 """,
-                (connector_id, connector_name, capability, interval_seconds, _iso(next_at)),
+                (connector_id, connector_name, capability, 1, interval_seconds, _iso(next_at), 1 if start_immediately else 0),
             )
-            # Normal discovery must preserve durable backoff state. An explicit
-            # start_immediately request, however, is an operator/test instruction
-            # to pull an existing schedule forward without resetting failures.
-            if start_immediately:
-                conn.execute(
-                    "UPDATE pull_schedules SET next_attempt_at=? WHERE connector_id=? AND capability=?",
-                    (_iso(next_at), connector_id, capability),
-                )
-        return self.get(connector_id, capability)
-
-    def get(self, connector_id: str, capability: str) -> PullSchedule:
-        with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
                 (connector_id, capability),
             ).fetchone()
-        if row is None:
-            raise KeyError("Unknown pull schedule")
         return self._record(row)
+
+    def due(self, now: datetime | None = None) -> list[PullSchedule]:
+        now_text = _iso(now or _now_dt())
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pull_schedules WHERE enabled=1 AND next_attempt_at<=? ORDER BY next_attempt_at",
+                (now_text,),
+            ).fetchall()
+        return [self._record(row) for row in rows]
 
     def list(self) -> list[PullSchedule]:
         with self._connect() as conn:
@@ -113,20 +116,16 @@ class PullScheduleStore:
             ).fetchall()
         return [self._record(row) for row in rows]
 
-    def due(self, now: datetime | None = None) -> list[PullSchedule]:
+    def mark_success(self, connector_id: str, capability: str, *, now: datetime | None = None) -> PullSchedule:
         now = now or _now_dt()
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM pull_schedules WHERE enabled=1 AND next_attempt_at<=? ORDER BY next_attempt_at",
-                (_iso(now),),
-            ).fetchall()
-        return [self._record(row) for row in rows]
-
-    def mark_success(self, connector_id: str, capability: str, *, now: datetime | None = None) -> None:
-        now = now or _now_dt()
-        current = self.get(connector_id, capability)
-        next_at = now + timedelta(seconds=current.interval_seconds)
-        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
+                (connector_id, capability),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown pull schedule")
+            next_at = now + timedelta(seconds=int(row["interval_seconds"]))
             conn.execute(
                 """
                 UPDATE pull_schedules
@@ -135,43 +134,48 @@ class PullScheduleStore:
                 """,
                 (_iso(now), _iso(now), _iso(next_at), connector_id, capability),
             )
+            updated = conn.execute(
+                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
+                (connector_id, capability),
+            ).fetchone()
+        return self._record(updated)
 
     def mark_failure(self, connector_id: str, capability: str, error: str,
-                     *, now: datetime | None = None, jitter: bool = True) -> int:
+                     *, now: datetime | None = None, jitter: bool = True) -> PullSchedule:
         now = now or _now_dt()
-        current = self.get(connector_id, capability)
-        failures = current.consecutive_failures + 1
-        # 1m, 2m, 4m ... capped at 1h. Jitter prevents provider thundering-herd retries.
-        delay = min(3600, 60 * (2 ** (failures - 1)))
-        if jitter:
-            delay = max(30, int(delay * random.uniform(0.8, 1.2)))
-        next_at = now + timedelta(seconds=delay)
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
+                (connector_id, capability),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown pull schedule")
+            failures = int(row["consecutive_failures"]) + 1
+            delay = min(3600, 60 * (2 ** (failures - 1)))
+            if jitter:
+                delay = max(60, int(delay * random.uniform(0.85, 1.15)))
+            next_at = now + timedelta(seconds=delay)
             conn.execute(
                 """
                 UPDATE pull_schedules
                 SET consecutive_failures=?,last_attempt_at=?,last_error=?,next_attempt_at=?
                 WHERE connector_id=? AND capability=?
                 """,
-                (failures, _iso(now), str(error)[:2000], _iso(next_at), connector_id, capability),
+                (failures, _iso(now), str(error), _iso(next_at), connector_id, capability),
             )
-        return delay
-
-    def set_enabled(self, connector_id: str, capability: str, enabled: bool) -> None:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE pull_schedules SET enabled=? WHERE connector_id=? AND capability=?",
-                (1 if enabled else 0, connector_id, capability),
-            )
-            if cur.rowcount != 1:
-                raise KeyError("Unknown pull schedule")
+            updated = conn.execute(
+                "SELECT * FROM pull_schedules WHERE connector_id=? AND capability=?",
+                (connector_id, capability),
+            ).fetchone()
+        return self._record(updated)
 
     @staticmethod
     def _record(row: sqlite3.Row) -> PullSchedule:
         return PullSchedule(
             connector_id=row["connector_id"], connector_name=row["connector_name"],
             capability=row["capability"], enabled=bool(row["enabled"]),
-            interval_seconds=row["interval_seconds"], consecutive_failures=row["consecutive_failures"],
+            interval_seconds=int(row["interval_seconds"]),
+            consecutive_failures=int(row["consecutive_failures"]),
             next_attempt_at=row["next_attempt_at"], last_attempt_at=row["last_attempt_at"],
             last_success_at=row["last_success_at"], last_error=row["last_error"],
         )
