@@ -9,6 +9,8 @@ from connection_health import install_connection_health
 from connection_manager import ConnectionStore, CredentialCipher
 from connection_manager_web import install_connection_manager
 from csrf import install_csrf
+from financial_mutations_web import install_financial_mutation_routes
+from financial_uow import FinancialMutationUnitOfWork
 from managed_connectors import load_managed_connectors
 from multi_connector_web import install_multi_connector_routes
 from onboarding import install_onboarding
@@ -39,6 +41,9 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     _configure_session_secret(app)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
+    app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(
+        db_path, app.config["BOOKKEEPER"]
+    )
     app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
     app.config["PULL_SCHEDULES"] = PullScheduleStore(db_path)
     settlement_store = SettlementStore(db_path)
@@ -60,6 +65,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_redirect_safety(app)
     install_auth(app, db_path)
     install_separation_of_duties(app, db_path)
+    install_financial_mutation_routes(app)
     install_multi_connector_routes(app)
     install_settlements(app, settlement_store)
     install_connection_manager(app, connection_store)
