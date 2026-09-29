@@ -48,16 +48,32 @@ def _sha256_file(path: Path) -> str:
 
 
 def _readonly_connect(path: Path) -> sqlite3.Connection:
-    # Backups are checkpointed before publication, so immutable read mode is
-    # appropriate and prevents verification itself from creating WAL/SHM files.
+    # Published backups are converted to a single-file rollback-journal image,
+    # so immutable read mode is safe and verification cannot create WAL/SHM.
     conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _checkpoint_database(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    """Collapse a writable SQLite image into one self-contained database file.
+
+    WAL mode is persistent. A checkpoint alone can therefore leave empty -wal
+    and -shm files beside an otherwise complete snapshot. Backup bundles must
+    not depend on sidecars, so after checkpointing the *snapshot* is switched to
+    DELETE journal mode. The live source database is never changed.
+    """
+    conn = sqlite3.connect(path)
+    try:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint and int(checkpoint[0]) != 0:
+            raise ValueError(f"SQLite WAL checkpoint could not complete: {tuple(checkpoint)}")
+        mode = str(conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower()
+        if mode != "delete":
+            raise ValueError(f"SQLite snapshot could not leave WAL mode: {mode}")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _reject_sqlite_sidecars(path: Path) -> None:
