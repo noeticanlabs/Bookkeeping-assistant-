@@ -2,8 +2,12 @@ name: tests
 
 on:
   push:
-    branches: [kiss-fresh, v0.1-hardening]
+    branches: [main, v0.1-hardening]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   linux:
