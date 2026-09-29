@@ -17,6 +17,7 @@ ACTION_PERMISSIONS = {
     "sync.run": "sync.run",
     "invoice.issue": "invoice.issue",
     "document.submit": "documents.submit",
+    "ai_job.configure": "ai_jobs.configure",
     "work_order.create": "bookkeeping.write",
     "invoice.prepare": "bookkeeping.write",
     "payment.record": "bookkeeping.write",
