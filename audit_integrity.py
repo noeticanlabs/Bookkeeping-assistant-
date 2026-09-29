@@ -14,6 +14,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -218,7 +219,10 @@ def verify_audit_chain(conn: sqlite3.Connection) -> AuditChainVerification:
 class AuditIntegrityStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
-        with sqlite3.connect(self.db_path) as raw:
+        # sqlite3.Connection.__exit__ commits/rolls back but does not close the
+        # connection. Explicit closing is required so Windows does not retain a
+        # file handle that prevents backup/restore publication.
+        with closing(sqlite3.connect(self.db_path)) as raw:
             raw.row_factory = sqlite3.Row
             raw.execute("PRAGMA foreign_keys=ON")
             ensure_audit_integrity(raw)
@@ -227,10 +231,11 @@ class AuditIntegrityStore:
                 raise RuntimeError(
                     f"Audit chain verification failed at sequence {verification.error_seq}: {verification.detail}"
                 )
+            raw.commit()
 
     def append(self, event_type: str, evidence_id: str, payload: dict[str, object], actor: str = "user"):
         from audit_log import AuditEvent
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys=ON")
             ensure_audit_integrity(conn)
@@ -241,12 +246,15 @@ class AuditIntegrityStore:
                 conn, event_type, evidence_id, payload, actor,
                 event_id=event_id, created_at=created_at,
             )
+            conn.commit()
         return AuditEvent(event_id, event_type, created_at, evidence_id, actor, payload)
 
     def verify(self) -> AuditChainVerification:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            return verify_audit_chain(conn)
+            verification = verify_audit_chain(conn)
+            conn.commit()
+            return verification
 
     def head_hash(self) -> str:
         return self.verify().head_hash
