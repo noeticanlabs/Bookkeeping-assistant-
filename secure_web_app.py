@@ -4,6 +4,7 @@ import os
 import secrets
 
 from ai_credential_boundary import AICredentialDomain
+from ai_providers import governed_provider_invoke
 from ai_runtime_boundary import AIRuntimeBoundary
 from audit_integrity import AuditIntegrityStore
 from auth_web import install_auth
@@ -16,7 +17,7 @@ from document_provenance_web import install_document_provenance_routes
 from extraction_history import ExtractionHistoryStore
 from financial_mutations_web import install_financial_mutation_routes
 from financial_uow import FinancialMutationUnitOfWork
-from governed_ai import GovernedAIStore, openai_invoke
+from governed_ai import GovernedAIStore
 from governed_ai_web import install_governed_ai
 from managed_connectors import load_managed_connectors
 from multi_connector_web import install_multi_connector_routes
@@ -63,7 +64,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     governed_ai_store = GovernedAIStore(db_path)
     app.config["GOVERNED_AI_STORE"] = governed_ai_store
     ai_credentials = AICredentialDomain.from_environment(os.environ)
-    ai_runtime = AIRuntimeBoundary(credentials=ai_credentials, provider_invoke=openai_invoke)
+    ai_runtime = AIRuntimeBoundary(credentials=ai_credentials, provider_invoke=governed_provider_invoke)
     app.config["GOVERNED_AI_RUNTIME"] = ai_runtime
     app.config["GOVERNED_AI_INVOKE"] = ai_runtime.invoke
     app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900")))
