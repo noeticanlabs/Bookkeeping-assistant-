@@ -14,6 +14,8 @@ from document_provenance_web import install_document_provenance_routes
 from extraction_history import ExtractionHistoryStore
 from financial_mutations_web import install_financial_mutation_routes
 from financial_uow import FinancialMutationUnitOfWork
+from governed_ai import GovernedAIStore, openai_invoke
+from governed_ai_web import install_governed_ai
 from managed_connectors import load_managed_connectors
 from multi_connector_web import install_multi_connector_routes
 from onboarding import install_onboarding
@@ -44,25 +46,22 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     _configure_session_secret(app)
     db_path = app.config["BOOKKEEPER_DATA_PATH"]
 
-    # Establish and verify the append-only audit chain before any transactional
-    # UOW begins. The existing SQLiteAuditLog object remains the read facade used
-    # by dashboard closures, but every append delegates to the integrity writer.
     audit_integrity = AuditIntegrityStore(db_path)
     app.config["AUDIT_INTEGRITY"] = audit_integrity
     app.config["AUDIT_LOG"].append = audit_integrity.append
 
     app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
-    app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(
-        db_path, app.config["BOOKKEEPER"]
-    )
+    app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(db_path, app.config["BOOKKEEPER"])
     extraction_history = ExtractionHistoryStore(db_path)
     app.config["EXTRACTION_HISTORY"] = extraction_history
     app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
     app.config["PULL_SCHEDULES"] = PullScheduleStore(db_path)
     settlement_store = SettlementStore(db_path)
-    app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(
-        60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900"))
-    )
+    app.config["SETTLEMENT_STORE"] = settlement_store
+    governed_ai_store = GovernedAIStore(db_path)
+    app.config["GOVERNED_AI_STORE"] = governed_ai_store
+    app.config["GOVERNED_AI_INVOKE"] = openai_invoke
+    app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900")))
 
     cipher = CredentialCipher.from_environment()
     connection_store = ConnectionStore(db_path, cipher) if cipher is not None else None
@@ -70,8 +69,6 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     if connection_store is not None:
         load_managed_connectors(app.config["CONNECTOR_HUB"], connection_store)
 
-    # Discover schedules even when the background worker is disabled so the
-    # operator can inspect/enable them from the application.
     discover_safe_pull_schedules(app, interval_seconds=app.config["AUTO_SYNC_INTERVAL_SECONDS"])
 
     install_csrf(app)
@@ -82,6 +79,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_multi_connector_routes(app)
     install_document_provenance_routes(app, extraction_history)
     install_settlements(app, settlement_store)
+    install_governed_ai(app, governed_ai_store)
     install_connection_manager(app, connection_store)
     install_connection_health(app, connection_store)
     install_onboarding(app, db_path)
@@ -89,6 +87,7 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     install_business_intelligence(app, db_path, settlement_store=settlement_store)
     app.config["AUTO_SYNC_THREAD"] = start_scheduler_thread(app)
     app.config["AUTO_SYNC_ENABLED"] = app.config["AUTO_SYNC_THREAD"] is not None
+    app.config["GOVERNED_AI_SCHEDULER_ENABLED"] = os.environ.get("BOOKKEEPER_AI_SCHEDULER", "0") == "1"
     return app
 
 
