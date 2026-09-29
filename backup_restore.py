@@ -140,8 +140,43 @@ def _verify_source_documents(db_path: Path, evidence_root: Path) -> None:
             raise ValueError(f"Evidence {row['evidence_id']} with SHA-256 {expected} is missing from evidence vault")
 
 
+def _publish_backup(staging: Path, destination: Path) -> None:
+    """Publish a verified bundle using the manifest as the commit marker.
+
+    Directory rename is not a portable atomic-publication primitive: on Windows
+    it additionally requires DELETE/DELETE_CHILD rights and can fail even when
+    the process can create and populate the directory.  Instead, create the
+    destination exclusively, publish all manifest-bound payload first, and move
+    the manifest last.  A directory without the manifest is definitionally not
+    a valid backup, so observers can never accept a partially published bundle.
+    Any failure removes the incomplete destination.
+    """
+    destination.mkdir(parents=False, exist_ok=False)
+    committed = False
+    try:
+        source_db = staging / DATABASE_NAME
+        os.replace(source_db, destination / DATABASE_NAME)
+
+        source_evidence = staging / EVIDENCE_DIR_NAME
+        if source_evidence.exists():
+            # Avoid relying on directory rename semantics.  copytree creates the
+            # destination tree with its native ACLs and copies every bound file.
+            shutil.copytree(source_evidence, destination / EVIDENCE_DIR_NAME)
+
+        # Commit point: verify_backup() refuses every bundle lacking this file.
+        os.replace(staging / MANIFEST_NAME, destination / MANIFEST_NAME)
+
+        check = verify_backup(destination)
+        if not check.valid:
+            raise ValueError(f"Published backup failed verification: {check.detail}")
+        committed = True
+    finally:
+        if not committed:
+            shutil.rmtree(destination, ignore_errors=True)
+
+
 def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str | Path) -> Path:
-    """Create and self-verify one directory backup using SQLite online backup."""
+    """Create, self-verify, and transactionally publish one directory backup."""
     source_db = Path(db_path)
     source_evidence = Path(evidence_dir)
     destination = Path(backup_dir)
@@ -175,14 +210,10 @@ def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str
         check = verify_backup(staging)
         if not check.valid:
             raise ValueError(f"New backup failed self-verification: {check.detail}")
-        # Windows does not support os.replace() for renaming a directory in
-        # this case. Destination is guaranteed absent, so rename preserves the
-        # desired same-volume atomic publication behavior on Linux and Windows.
-        os.rename(staging, destination)
+        _publish_backup(staging, destination)
         return destination
-    except Exception:
+    finally:
         shutil.rmtree(staging, ignore_errors=True)
-        raise
 
 
 def verify_backup(backup_dir: str | Path) -> BackupVerification:
