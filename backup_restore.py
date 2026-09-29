@@ -18,6 +18,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,15 +49,12 @@ def _sha256_file(path: Path) -> str:
 
 
 def _readonly_connect(path: Path) -> sqlite3.Connection:
-    # Published backups are converted to a single-file rollback-journal image,
-    # so immutable read mode is safe and verification cannot create WAL/SHM.
     conn = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _checkpoint_database(path: Path) -> None:
-    """Collapse a writable SQLite image into one self-contained database file."""
     conn = sqlite3.connect(path)
     try:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -79,7 +77,7 @@ def _reject_sqlite_sidecars(path: Path) -> None:
 
 def _sqlite_integrity(path: Path) -> None:
     try:
-        with _readonly_connect(path) as conn:
+        with closing(_readonly_connect(path)) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError as exc:
         raise ValueError(f"SQLite backup cannot be opened: {exc}") from exc
@@ -88,7 +86,7 @@ def _sqlite_integrity(path: Path) -> None:
 
 
 def _schema_version(path: Path) -> str | None:
-    with _readonly_connect(path) as conn:
+    with closing(_readonly_connect(path)) as conn:
         try:
             row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         except sqlite3.DatabaseError:
@@ -97,12 +95,12 @@ def _schema_version(path: Path) -> str | None:
 
 
 def _audit_verification(path: Path):
-    with _readonly_connect(path) as conn:
+    with closing(_readonly_connect(path)) as conn:
         return verify_audit_chain(conn)
 
 
 def _evidence_rows(path: Path) -> list[dict[str, object]]:
-    with _readonly_connect(path) as conn:
+    with closing(_readonly_connect(path)) as conn:
         try:
             rows = conn.execute("SELECT evidence_id,sha256,data FROM source_documents ORDER BY evidence_id").fetchall()
         except sqlite3.DatabaseError:
@@ -141,31 +139,16 @@ def _verify_source_documents(db_path: Path, evidence_root: Path) -> None:
 
 
 def _publish_backup(staging: Path, destination: Path) -> None:
-    """Publish a verified bundle using the manifest as the commit marker.
-
-    Directory rename is not a portable atomic-publication primitive: on Windows
-    it additionally requires DELETE/DELETE_CHILD rights and can fail even when
-    the process can create and populate the directory.  Instead, create the
-    destination exclusively, publish all manifest-bound payload first, and move
-    the manifest last.  A directory without the manifest is definitionally not
-    a valid backup, so observers can never accept a partially published bundle.
-    Any failure removes the incomplete destination.
-    """
+    """Publish a verified bundle using the manifest as the commit marker."""
     destination.mkdir(parents=False, exist_ok=False)
     committed = False
     try:
         source_db = staging / DATABASE_NAME
         os.replace(source_db, destination / DATABASE_NAME)
-
         source_evidence = staging / EVIDENCE_DIR_NAME
         if source_evidence.exists():
-            # Avoid relying on directory rename semantics.  copytree creates the
-            # destination tree with its native ACLs and copies every bound file.
             shutil.copytree(source_evidence, destination / EVIDENCE_DIR_NAME)
-
-        # Commit point: verify_backup() refuses every bundle lacking this file.
         os.replace(staging / MANIFEST_NAME, destination / MANIFEST_NAME)
-
         check = verify_backup(destination)
         if not check.valid:
             raise ValueError(f"Published backup failed verification: {check.detail}")
@@ -176,7 +159,6 @@ def _publish_backup(staging: Path, destination: Path) -> None:
 
 
 def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str | Path) -> Path:
-    """Create, self-verify, and transactionally publish one directory backup."""
     source_db = Path(db_path)
     source_evidence = Path(evidence_dir)
     destination = Path(backup_dir)
@@ -186,8 +168,9 @@ def create_backup(db_path: str | Path, evidence_dir: str | Path, backup_dir: str
     staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
     try:
         snapshot = staging / DATABASE_NAME
-        with sqlite3.connect(source_db) as source, sqlite3.connect(snapshot) as target:
+        with closing(sqlite3.connect(source_db)) as source, closing(sqlite3.connect(snapshot)) as target:
             source.backup(target)
+            target.commit()
         _checkpoint_database(snapshot)
         _reject_sqlite_sidecars(snapshot)
         _sqlite_integrity(snapshot)
@@ -267,7 +250,7 @@ def verify_backup(backup_dir: str | Path) -> BackupVerification:
 
 def _relocate_source_document_paths(db_path: Path, staged_evidence_dir: Path, final_evidence_dir: Path) -> None:
     staged_by_hash = _evidence_hash_map(staged_evidence_dir)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT evidence_id,sha256,data FROM source_documents").fetchall()
         for row in rows:
@@ -278,6 +261,7 @@ def _relocate_source_document_paths(db_path: Path, staged_evidence_dir: Path, fi
             data = json.loads(row["data"])
             data["stored_path"] = str(final_evidence_dir / relative)
             conn.execute("UPDATE source_documents SET data=? WHERE evidence_id=?", (json.dumps(data, default=str, separators=(",", ":")), row["evidence_id"]))
+        conn.commit()
 
 
 def _restore_rollback(target_db: Path, target_evidence: Path, rollback_db: Path, rollback_evidence: Path) -> None:
@@ -324,10 +308,11 @@ def restore_backup(backup_dir: str | Path, target_db_path: str | Path, target_ev
             raise ValueError(f"Staged restore audit chain invalid: {audit.detail}")
         _verify_source_documents(staged_db, staged_evidence)
         AuditIntegrityStore(staged_db)
-        with sqlite3.connect(staged_db) as conn:
+        with closing(sqlite3.connect(staged_db)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
             append_audit_row(conn, "system.restore.completed", "SYSTEM:BACKUP", {"backup_audit_head": verification.audit_head_hash, "restored_at": datetime.now(timezone.utc).isoformat()}, actor)
+            conn.commit()
         _checkpoint_database(staged_db)
         _reject_sqlite_sidecars(staged_db)
         if rollback_db.exists():
