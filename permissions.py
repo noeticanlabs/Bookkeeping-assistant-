@@ -16,6 +16,7 @@ PERMISSIONS = (
     "documents.approve",
     "corrections.propose",
     "corrections.approve",
+    "ai_jobs.configure",
     "company.configure",
     "users.manage",
 )
@@ -25,6 +26,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     "Owner": {
         "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
         "documents.submit", "documents.approve", "corrections.propose", "corrections.approve",
+        "ai_jobs.configure",
     },
     "Bookkeeper": {
         "records.read", "bookkeeping.write", "sync.run", "invoice.issue",
@@ -34,11 +36,11 @@ DEFAULT_ROLE_PERMISSIONS = {
 }
 
 # Each permission expansion is migrated once. This preserves historical access
-# for roles that previously relied on bookkeeping.write without re-granting a
-# permission an administrator later removes deliberately.
+# without re-granting a permission an administrator later removes deliberately.
 PERMISSION_MIGRATIONS = (
     ("action_permissions_v1", {"sync.run", "invoice.issue"}),
     ("action_permissions_v2", {"documents.submit"}),
+    ("action_permissions_v3", {"ai_jobs.configure"}),
 )
 
 
@@ -85,7 +87,9 @@ class PermissionStore:
                     upgraded = set(current)
                     if row["role"] == "Administrator":
                         upgraded = set(PERMISSIONS)
-                    elif "bookkeeping.write" in current:
+                    elif row["role"] == "Owner" and migration_key == "action_permissions_v3":
+                        upgraded.update(implied_permissions)
+                    elif "bookkeeping.write" in current and migration_key != "action_permissions_v3":
                         upgraded.update(implied_permissions)
                     if upgraded != current:
                         conn.execute(
