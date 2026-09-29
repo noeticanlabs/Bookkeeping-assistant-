@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Any
 
+from ai_credential_boundary import AICredentialDomain
+
 
 ALLOWED_CONTEXT_SCOPES = frozenset({"summary", "exceptions", "invoices", "work_orders"})
 ALLOWED_AUTHORITY = frozenset({"observe", "propose"})
@@ -182,7 +184,6 @@ def build_context(book, scopes: set[str]) -> dict[str, Any]:
         result["work_orders"] = [vars(x) for x in book.work_orders.values()]
     if "invoices" in scopes:
         result["invoices"] = [vars(x) for x in book.invoices.values()]
-    # Exceptions are supplied by the application when available; do not invent them here.
     return result
 
 
@@ -217,13 +218,14 @@ def execute_due_ai_jobs(app, invoke: Callable[[str, str, str, dict[str, Any]], s
     return summary
 
 
-def openai_invoke(provider: str, model: str, prompt: str, context: dict[str, Any]) -> str:
+def openai_invoke(provider: str, model: str, prompt: str, context: dict[str, Any], *,
+                  credentials: AICredentialDomain | None = None) -> str:
+    """Invoke OpenAI using only the explicit AI-provider credential domain."""
     if provider != "openai":
         raise ValueError(f"Unsupported governed AI provider: {provider}")
-    import os
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY is required for governed OpenAI jobs")
+    if credentials is None:
+        raise RuntimeError("An isolated AI credential domain is required")
+    key = credentials.require("OPENAI_API_KEY")
     try:
         from openai import OpenAI
     except ImportError as exc:
