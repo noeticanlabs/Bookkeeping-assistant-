@@ -1,0 +1,104 @@
+"""Authenticated Bookkeeper Assistant entrypoint."""
+
+import os
+import secrets
+
+from ai_credential_boundary import AICredentialDomain
+from ai_providers import governed_provider_invoke
+from ai_runtime_boundary import AIRuntimeBoundary
+from audit_integrity import AuditIntegrityStore
+from auth_web import install_auth
+from business_intelligence_web import install_business_intelligence
+from connection_health import install_connection_health
+from connection_manager import ConnectionStore, CredentialCipher
+from connection_manager_web import install_connection_manager
+from csrf import install_csrf
+from document_provenance_web import install_document_provenance_routes
+from extraction_history import ExtractionHistoryStore
+from financial_mutations_web import install_financial_mutation_routes
+from financial_uow import FinancialMutationUnitOfWork
+from governed_ai import GovernedAIStore
+from governed_ai_web import install_governed_ai
+from managed_connectors import load_managed_connectors
+from multi_connector_web import install_multi_connector_routes
+from onboarding import install_onboarding
+from pull_scheduler import PullScheduleStore
+from readiness import install_readiness
+from redirect_safety import install_redirect_safety
+from scheduled_sync import discover_safe_pull_schedules, start_scheduler_thread
+from settlements import SettlementStore
+from settlements_web import install_settlements
+from sod_web import install_separation_of_duties
+from sqlite_store import save_bookkeeper
+from sync_reliability import SyncReliabilityStore
+from web_app import create_app
+
+
+def _configure_session_secret(app) -> None:
+    configured = os.environ.get("BOOKKEEPER_SECRET", "").strip()
+    production = os.environ.get("BOOKKEEPER_PRODUCTION") == "1"
+    if production and not configured:
+        raise RuntimeError("BOOKKEEPER_SECRET is required when BOOKKEEPER_PRODUCTION=1")
+    app.secret_key = configured or secrets.token_hex(32)
+    app.config["SESSION_SECRET_CONFIGURED"] = bool(configured)
+    app.config["BOOKKEEPER_PRODUCTION"] = production
+
+
+def create_secure_app(data_path: str | None = None, connectors=None):
+    app = create_app(data_path, connectors=connectors)
+    _configure_session_secret(app)
+    db_path = app.config["BOOKKEEPER_DATA_PATH"]
+
+    audit_integrity = AuditIntegrityStore(db_path)
+    app.config["AUDIT_INTEGRITY"] = audit_integrity
+    app.config["AUDIT_LOG"].append = audit_integrity.append
+
+    app.config["SAVE_BOOKKEEPER"] = lambda: save_bookkeeper(app.config["BOOKKEEPER"], db_path)
+    app.config["FINANCIAL_MUTATION_UOW"] = FinancialMutationUnitOfWork(db_path, app.config["BOOKKEEPER"])
+    extraction_history = ExtractionHistoryStore(db_path)
+    app.config["EXTRACTION_HISTORY"] = extraction_history
+    app.config["SYNC_RELIABILITY"] = SyncReliabilityStore(db_path)
+    app.config["PULL_SCHEDULES"] = PullScheduleStore(db_path)
+    settlement_store = SettlementStore(db_path)
+    app.config["SETTLEMENT_STORE"] = settlement_store
+    governed_ai_store = GovernedAIStore(db_path)
+    app.config["GOVERNED_AI_STORE"] = governed_ai_store
+    ai_credentials = AICredentialDomain.from_environment(os.environ)
+    ai_runtime = AIRuntimeBoundary(credentials=ai_credentials, provider_invoke=governed_provider_invoke)
+    app.config["GOVERNED_AI_RUNTIME"] = ai_runtime
+    app.config["GOVERNED_AI_INVOKE"] = ai_runtime.invoke
+    app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900")))
+
+    cipher = CredentialCipher.from_environment()
+    connection_store = ConnectionStore(db_path, cipher) if cipher is not None else None
+    app.config["CREDENTIAL_ENCRYPTION_CONFIGURED"] = cipher is not None
+    if connection_store is not None:
+        load_managed_connectors(app.config["CONNECTOR_HUB"], connection_store)
+
+    discover_safe_pull_schedules(app, interval_seconds=app.config["AUTO_SYNC_INTERVAL_SECONDS"])
+
+    install_csrf(app)
+    install_redirect_safety(app)
+    install_auth(app, db_path)
+    install_separation_of_duties(app, db_path)
+    install_financial_mutation_routes(app)
+    install_multi_connector_routes(app)
+    install_document_provenance_routes(app, extraction_history)
+    install_settlements(app, settlement_store)
+    install_governed_ai(app, governed_ai_store)
+    install_connection_manager(app, connection_store)
+    install_connection_health(app, connection_store)
+    install_onboarding(app, db_path)
+    install_readiness(app)
+    install_business_intelligence(app, db_path, settlement_store=settlement_store)
+    app.config["AUTO_SYNC_THREAD"] = start_scheduler_thread(app)
+    app.config["AUTO_SYNC_ENABLED"] = app.config["AUTO_SYNC_THREAD"] is not None
+    app.config["GOVERNED_AI_SCHEDULER_ENABLED"] = os.environ.get("BOOKKEEPER_AI_SCHEDULER", "0") == "1"
+    return app
+
+
+app = create_secure_app()
+
+
+if __name__ == "__main__":
+    app.run(debug=os.environ.get("BOOKKEEPER_DEBUG") == "1")

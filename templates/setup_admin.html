@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Initial setup — Bookkeeper Assistant</title>
+<style>body{font-family:system-ui,sans-serif;max-width:520px;margin:3rem auto;padding:0 1rem}.card{border:1px solid #ddd;border-radius:10px;padding:1.25rem}form{display:grid;gap:.8rem}input,button{padding:.7rem;font:inherit}.error{background:#ffecec;padding:.6rem;border-radius:6px}.note{background:#f5f5f5;padding:.7rem;border-radius:6px}</style></head>
+<body><h1>Initial company setup</h1><p class="note">Create the first Administrator. After this account exists, the application requires authentication.</p><div class="card">
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<p class="{{category}}">{{message}}</p>{% endfor %}{% endwith %}
+<form method="post"><label>Display name<input name="display_name" required></label><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" minlength="10" autocomplete="new-password" required></label><button>Create Administrator</button></form></div></body></html>

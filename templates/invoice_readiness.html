@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Invoice Readiness</title>
+  <style>
+    body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    .card { border: 1px solid #ccc; padding: 1rem; margin: 1rem 0; }
+    .ready { font-weight: 700; }
+    li { margin: .4rem 0; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('exception_dashboard') }}">Exceptions</a>
+  </nav>
+
+  <h1>Invoice Readiness — {{ readiness.work_order_id }}</h1>
+  <div class="card">
+    <p><strong>Status:</strong> {{ readiness.status }}</p>
+    <p><strong>Proposed invoice total:</strong> {{ readiness.proposed_total if readiness.proposed_total is not none else 'Not available' }}</p>
+    <p><strong>Current job cost:</strong> {{ readiness.job_cost }}</p>
+    <p><strong>Projected margin:</strong> {{ readiness.projected_margin if readiness.projected_margin is not none else 'Not available' }}</p>
+  </div>
+
+  <h2>Blockers</h2>
+  {% if readiness.blockers %}
+    <ul>{% for item in readiness.blockers %}<li>{{ item }}</li>{% endfor %}</ul>
+  {% else %}
+    <p class="ready">No deterministic blockers found.</p>
+  {% endif %}
+
+  <h2>Warnings</h2>
+  {% if readiness.warnings %}
+    <ul>{% for item in readiness.warnings %}<li>{{ item }}</li>{% endfor %}</ul>
+  {% else %}
+    <p>No warnings.</p>
+  {% endif %}
+
+  {% if readiness.status == 'ready' %}
+    <p><strong>This job is ready for the existing invoice preparation workflow.</strong></p>
+  {% endif %}
+</body>
+</html>

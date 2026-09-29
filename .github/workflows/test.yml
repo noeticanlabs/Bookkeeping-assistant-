@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [kiss-fresh, v0.1-hardening]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate Linux installer syntax
+        run: bash -n scripts/install_linux.sh
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: pytest -q
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Windows installer
+        shell: powershell
+        run: .\scripts\install_windows.ps1
+      - name: Run tests from installed environment
+        shell: powershell
+        run: .\.venv\Scripts\python.exe -m pytest -q

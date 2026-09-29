@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company Setup — Bookkeeper Assistant</title>
+<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}form{display:grid;gap:1.25rem}.card{border:1px solid #ddd;border-radius:10px;padding:1rem}label{display:grid;gap:.35rem;margin:.55rem 0}input,select,button{padding:.65rem;font:inherit}button{cursor:pointer}.error{background:#ffecec;padding:.6rem}.success{background:#edf9ed;padding:.6rem}.hint{color:#555;font-size:.94rem}</style></head>
+<body><p><a href="/">← Dashboard</a></p><h1>Company setup</h1><p class="hint">Answer the business questions. Bookkeeper Assistant will configure the detailed policies behind the scenes. You can change advanced settings later.</p>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<p class="{{category}}">{{message}}</p>{% endfor %}{% endwith %}
+<form method="post">
+<section class="card"><h2>1. Your business</h2>
+<label>Company name<input name="name" value="{{profile.name}}" required></label>
+<label>What do you call the work?<select name="job_label"><option>Work Order</option><option>Job</option><option>Project</option><option>Service Call</option><option>Ticket</option></select></label>
+<label>What do you call the people you serve?<select name="customer_label"><option>Customer</option><option>Client</option><option>Account</option><option>Resident</option></select></label></section>
+<section class="card"><h2>2. Existing systems</h2>
+<label>Field-service / work system<input name="field_service_system" value="{{profile.field_service_system}}" placeholder="Jobber, ServiceTitan, Housecall Pro, none"></label>
+<label>Accounting system<input name="accounting_system" value="{{profile.accounting_system}}" placeholder="QuickBooks, Xero, none"></label>
+<label>Bank / payment source<input name="bank_system" value="{{profile.bank_system}}" placeholder="Bank feed, processor, none"></label>
+<label>Document reader<input name="document_system" value="{{profile.document_system}}" placeholder="openai"></label></section>
+<section class="card"><h2>3. Vendor bills and job costs</h2>
+<label>Default vendor-bill treatment<select name="vendor_bill_mode"><option value="ask">Ask each time</option><option value="create_cost">Create job cost</option><option value="support_cost">Support existing cost</option></select></label></section>
+<section class="card"><h2>4. Approval style</h2>
+<label>Can an authorized bookkeeper post routine reviewed receipts/bills without a second person?<select name="routine_direct"><option value="yes">Yes</option><option value="no">No — require one independent approval</option></select></label>
+<label>Optional routine direct-post limit<input name="routine_direct_limit" inputmode="decimal" placeholder="Example: 250"></label>
+<p class="hint">If entered, items at or above this amount require at least one approval even when routine direct posting is allowed.</p>
+<label>Require two independent approvals at or above<input name="two_approval_threshold" inputmode="decimal" placeholder="Example: 5000"></label>
+<label>Prevent a proposer from approving their own request?<select name="prevent_self_approval"><option value="yes">Yes</option><option value="no">No</option></select></label></section>
+<button type="submit">Finish company setup</button>
+</form></body></html>

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Role permissions — Bookkeeper Assistant</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}.card{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:1rem 0}label{display:block;margin:.35rem 0}button{padding:.65rem 1rem;font:inherit}.error{background:#ffecec;padding:.6rem}.success{background:#edf9ed;padding:.6rem}code{background:#f5f5f5;padding:.1rem .3rem}</style></head>
+<body><p><a href="/">← Dashboard</a> · <a href="/settings/users">Users</a></p><h1>Role permissions</h1>
+<p>Roles are only bundles. Authorization is enforced by the permissions checked below.</p>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<p class="{{category}}">{{message}}</p>{% endfor %}{% endwith %}
+{% for role, granted in roles.items() %}<section class="card"><h2>{{role}}</h2><form method="post" action="/settings/permissions/{{role}}">
+{% for permission in all_permissions %}<label><input type="checkbox" name="permissions" value="{{permission}}" {% if permission in granted %}checked{% endif %} {% if role == 'Administrator' %}disabled{% endif %}> <code>{{permission}}</code></label>{% endfor %}
+{% if role == 'Administrator' %}<p>Administrator always retains all system permissions.</p>{% else %}<button>Save {{role}} permissions</button>{% endif %}</form></section>{% endfor %}
+</body></html>

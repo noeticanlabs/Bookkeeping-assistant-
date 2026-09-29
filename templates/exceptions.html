@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Bookkeeping Exceptions</title>
+  <style>
+    body { font-family: sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; }
+    th, td { text-align: left; padding: .65rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    .S3 { font-weight: 700; }
+    .S2 { font-weight: 700; }
+    .empty { padding: 1rem; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('verification_dashboard') }}">Verifications</a>
+    <a href="{{ url_for('relationship_dashboard') }}">Relationships</a>
+    <a href="{{ url_for('sync_status') }}">Sync Status</a>
+  </nav>
+
+  <h1>Needs Attention</h1>
+  <p>Routine bookkeeping can flow automatically; uncertainty stays visible here for human review.</p>
+
+  {% if exceptions %}
+  <table>
+    <thead><tr><th>Severity</th><th>Type</th><th>Reference</th><th>Issue</th><th>Required action</th></tr></thead>
+    <tbody>
+    {% for item in exceptions %}
+      <tr>
+        <td class="{{ item.severity }}">{{ item.severity }}</td>
+        <td>{{ item.kind }}</td>
+        <td>{{ item.reference_id }}</td>
+        <td>{{ item.message }}</td>
+        <td>{{ item.required_action }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty"><strong>No current bookkeeping exceptions.</strong></div>
+  {% endif %}
+
+  <h2>Completed Job Invoice Readiness</h2>
+  <table>
+    <thead><tr><th>Work order</th><th>Status</th><th>Proposed total</th><th>Job cost</th><th>Projected margin</th><th></th></tr></thead>
+    <tbody>
+    {% for item in readiness %}
+      <tr>
+        <td>{{ item.work_order_id }}</td>
+        <td>{{ item.status }}</td>
+        <td>{{ item.proposed_total if item.proposed_total is not none else '—' }}</td>
+        <td>{{ item.job_cost }}</td>
+        <td>{{ item.projected_margin if item.projected_margin is not none else '—' }}</td>
+        <td><a href="{{ url_for('job_invoice_readiness', work_order_id=item.work_order_id) }}">Review</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

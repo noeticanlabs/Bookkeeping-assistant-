@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review Document — Bookkeeper Assistant</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 850px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border:1px solid #ddd; border-radius:10px; padding:1.25rem; }
+    form { display:grid; gap:.85rem; }
+    label { display:grid; gap:.3rem; font-weight:600; }
+    input, select, button { padding:.65rem; font:inherit; }
+    .note { background:#f5f5f5; padding:.8rem; border-radius:7px; }
+    .actions { display:flex; gap:.75rem; align-items:center; }
+    code { overflow-wrap:anywhere; }
+    small { font-weight:400; opacity:.75; }
+  </style>
+</head>
+<body>
+  <h1>Review extracted document</h1>
+  <p class="note"><strong>Nothing has been posted yet.</strong> The document reader supplied a proposal. Review or change every field before approval.</p>
+
+  <div class="card">
+    <p><strong>Source:</strong> {{ proposal.filename }}</p>
+    <p><strong>Evidence ID:</strong> {{ evidence.evidence_id }}<br>
+      <small>SHA-256: <code>{{ evidence.sha256 }}</code></small>
+    </p>
+    <form method="post" action="/documents/approve">
+      <input type="hidden" name="evidence_id" value="{{ evidence.evidence_id }}">
+      <label>Approved by
+        <input name="actor" value="user" required>
+        <small>This name is written to the append-only decision audit trail.</small>
+      </label>
+      <label>Record ID
+        <input name="record_id" value="{{ proposal.document_id or '' }}" placeholder="BILL-1042 or COST-1042" required>
+      </label>
+      <label>Vendor
+        <input name="vendor" value="{{ proposal.vendor }}" required>
+      </label>
+      <label>Amount
+        <input name="amount" value="{{ proposal.amount }}" required>
+      </label>
+      <label>Reference
+        <input name="reference" value="{{ proposal.reference }}" placeholder="PO, invoice number, WO reference">
+      </label>
+      <input type="hidden" name="document_id" value="{{ proposal.document_id }}">
+
+      <label>Work order
+        <select name="work_order_id">
+          <option value="">Not assigned / overhead</option>
+          {% for wo in book.work_orders.values() %}
+            <option value="{{ wo.id }}" {% if proposal.work_order_id == wo.id %}selected{% endif %}>{{ wo.id }} — {{ wo.customer }} — {{ wo.description }}</option>
+          {% endfor %}
+        </select>
+        <small>An exact WO reference may be preselected, but the user remains authoritative.</small>
+      </label>
+
+      <label>Record as
+        <select name="record_type" id="record_type">
+          <option value="vendor_bill" {% if proposal.record_type == 'vendor_bill' %}selected{% endif %}>Vendor bill</option>
+          <option value="cost" {% if proposal.record_type == 'cost' %}selected{% endif %}>Direct cost / receipt</option>
+        </select>
+      </label>
+
+      <label>Vendor-bill cost treatment
+        <select name="treatment">
+          <option value="ask">Record bill only; decide treatment later</option>
+          <option value="create_cost">Create job cost from this bill</option>
+          <option value="support_cost">Link bill to an existing cost</option>
+          <option value="overhead">Treat as overhead / no job cost</option>
+        </select>
+      </label>
+
+      <label>Existing cost to support
+        <select name="linked_cost_id">
+          <option value="">None</option>
+          {% for cost in book.costs.values() %}
+            <option value="{{ cost.id }}">{{ cost.id }} — {{ cost.vendor }} — ${{ cost.amount }} — {{ cost.work_order_id or 'unassigned' }}</option>
+          {% endfor %}
+        </select>
+        <small>Used only when “Link bill to an existing cost” is selected.</small>
+      </label>
+
+      <div class="actions">
+        <button>Approve and record</button>
+        <a href="/">Cancel</a>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
