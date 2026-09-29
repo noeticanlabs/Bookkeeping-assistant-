@@ -1,7 +1,7 @@
-"""Execution loop for scheduled safe connector pulls.
+"""Execution loop for scheduled safe connector pulls and proposal-only AI jobs.
 
-The loop never executes outbound write capabilities. Each due pull is isolated so
-one provider failure does not prevent another provider from running.
+The loop never executes outbound financial write capabilities. Each due task is
+isolated so one provider failure does not prevent another task from running.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import threading
 from copy import deepcopy
 from typing import Callable
 
+from governed_ai import execute_due_ai_jobs
 from imports import import_deposits, import_payments, import_work_orders
 from pull_scheduler import PullScheduleStore, SAFE_PULL_CAPABILITIES
 
@@ -57,16 +58,13 @@ def discover_safe_pull_schedules(app, *, interval_seconds: int | None = None) ->
 
 
 def execute_due_pulls(app) -> dict[str, int]:
-    """Run every due safe pull once and return summary counters."""
     hub = app.config["CONNECTOR_HUB"]
     book = app.config["BOOKKEEPER"]
     schedules: PullScheduleStore = app.config["PULL_SCHEDULES"]
     reliability = app.config["SYNC_RELIABILITY"]
     save = app.config["SAVE_BOOKKEEPER"]
-
     connectors = {_connector_id(c): c for c in hub.connectors}
     summary = {"success": 0, "failed": 0, "missing": 0}
-
     for schedule in schedules.due():
         if schedule.capability not in SAFE_PULL_CAPABILITIES:
             continue
@@ -81,10 +79,7 @@ def execute_due_pulls(app) -> dict[str, int]:
             schedules.mark_failure(schedule.connector_id, schedule.capability, "Connector no longer provides required pull method")
             summary["missing"] += 1
             continue
-
-        run_id = reliability.start_run(
-            schedule.connector_id, schedule.connector_name, schedule.capability, "scheduled_pull"
-        )
+        run_id = reliability.start_run(schedule.connector_id, schedule.connector_name, schedule.capability, "scheduled_pull")
         snapshot = deepcopy(book)
         try:
             rows = loader()
@@ -96,19 +91,13 @@ def execute_due_pulls(app) -> dict[str, int]:
             else:
                 result = importer(book, rows)
                 save()
-            reliability.finish_run(
-                run_id, added=result.added, skipped=result.skipped,
-                detail={"errors": list(result.errors), "scheduler": True},
-            )
+            reliability.finish_run(run_id, added=result.added, skipped=result.skipped,
+                                    detail={"errors": list(result.errors), "scheduler": True})
             schedules.mark_success(schedule.connector_id, schedule.capability)
             summary["success"] += 1
             try:
-                hub.emit(f"{schedule.capability}.scheduled", {
-                    "source": schedule.connector_name,
-                    "connector_id": schedule.connector_id,
-                    "added": result.added,
-                    "skipped": result.skipped,
-                })
+                hub.emit(f"{schedule.capability}.scheduled", {"source": schedule.connector_name,
+                         "connector_id": schedule.connector_id, "added": result.added, "skipped": result.skipped})
             except Exception:
                 pass
         except Exception as exc:
@@ -120,13 +109,12 @@ def execute_due_pulls(app) -> dict[str, int]:
                 pass
             schedules.mark_failure(schedule.connector_id, schedule.capability, str(exc))
             summary["failed"] += 1
-
     return summary
 
 
 def start_scheduler_thread(app) -> threading.Thread | None:
     """Start one lightweight daemon scheduler when explicitly enabled."""
-    if os.environ.get("BOOKKEEPER_AUTO_SYNC", "0") != "1":
+    if os.environ.get("BOOKKEEPER_AUTO_SYNC", "0") != "1" and os.environ.get("BOOKKEEPER_AI_SCHEDULER", "0") != "1":
         return None
     poll_seconds = max(10, int(os.environ.get("BOOKKEEPER_SYNC_POLL_SECONDS", "30")))
     interval_seconds = max(60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900")))
@@ -138,14 +126,15 @@ def start_scheduler_thread(app) -> threading.Thread | None:
         while True:
             try:
                 with app.app_context():
-                    discover_safe_pull_schedules(app, interval_seconds=interval_seconds)
-                    execute_due_pulls(app)
+                    if os.environ.get("BOOKKEEPER_AUTO_SYNC", "0") == "1":
+                        discover_safe_pull_schedules(app, interval_seconds=interval_seconds)
+                        execute_due_pulls(app)
+                    if os.environ.get("BOOKKEEPER_AI_SCHEDULER", "0") == "1":
+                        execute_due_ai_jobs(app)
             except Exception:
-                # The scheduler must not terminate the web application. Individual
-                # connector errors are already persisted in sync history/schedules.
                 pass
             time.sleep(poll_seconds)
 
-    thread = threading.Thread(target=worker, name="bookkeeper-safe-pull-scheduler", daemon=True)
+    thread = threading.Thread(target=worker, name="bookkeeper-governed-scheduler", daemon=True)
     thread.start()
     return thread
