@@ -3,6 +3,8 @@
 import os
 import secrets
 
+from ai_credential_boundary import AICredentialDomain
+from ai_runtime_boundary import AIRuntimeBoundary
 from audit_integrity import AuditIntegrityStore
 from auth_web import install_auth
 from business_intelligence_web import install_business_intelligence
@@ -60,7 +62,10 @@ def create_secure_app(data_path: str | None = None, connectors=None):
     app.config["SETTLEMENT_STORE"] = settlement_store
     governed_ai_store = GovernedAIStore(db_path)
     app.config["GOVERNED_AI_STORE"] = governed_ai_store
-    app.config["GOVERNED_AI_INVOKE"] = openai_invoke
+    ai_credentials = AICredentialDomain.from_environment(os.environ)
+    ai_runtime = AIRuntimeBoundary(credentials=ai_credentials, provider_invoke=openai_invoke)
+    app.config["GOVERNED_AI_RUNTIME"] = ai_runtime
+    app.config["GOVERNED_AI_INVOKE"] = ai_runtime.invoke
     app.config["AUTO_SYNC_INTERVAL_SECONDS"] = max(60, int(os.environ.get("BOOKKEEPER_AUTO_SYNC_INTERVAL_SECONDS", "900")))
 
     cipher = CredentialCipher.from_environment()
